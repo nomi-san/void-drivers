@@ -1,0 +1,119 @@
+;
+; VoidInput.inf - Void Virtual Input (UMDF + Virtual HID Framework)
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
+CatalogFile = VoidInput.cat
+PnpLockdown = 1
+DriverVer   = ; stamped by the build (stampinf)
+
+[Manufacturer]
+%ManufacturerName% = Standard, NTamd64.10.0...19041, NTamd64.10.0...22000
+
+[Standard.NTamd64.10.0...19041]
+%DeviceName% = VoidInput_Win10, Root\Void\Input
+
+[Standard.NTamd64.10.0...22000]
+%DeviceName% = VoidInput_Win11, Root\Void\Input
+
+[SourceDisksFiles]
+VoidInput.dll = 1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[DestinationDirs]
+UMDriverCopy = 13
+
+; =================== Windows 11+ ==================================
+; The in-box wudfrd.inf exports the upper-filter directives on Win11, so we pull
+; them in by Needs rather than installing WUDFRd by hand. VHF (hidvhf.inf) acts
+; as the function driver for the HID children we spawn.
+
+[VoidInput_Win11.NT]
+CopyFiles = UMDriverCopy
+Include   = wudfrd.inf
+Include   = hidvhf.inf
+Needs     = WUDFRD_UpperFilter.NT
+Needs     = vhfservice.NT
+
+[VoidInput_Win11.NT.HW]
+Include = wudfrd.inf
+Include = hidvhf.inf
+Needs   = WUDFRD_UpperFilter.NT.HW
+Needs   = vhfservice.NT.HW
+AddReg  = VoidInput_AddReg
+
+[VoidInput_Win11.NT.Services]
+Include = wudfrd.inf
+Include = hidvhf.inf
+Needs   = WUDFRD_UpperFilter.NT.Services
+Needs   = vhfservice.NT.Services
+
+[VoidInput_Win11.NT.Filters]
+Include = wudfrd.inf
+Needs   = WUDFRD_UpperFilter.NT.Filters
+
+[VoidInput_Win11.NT.Wdf]
+UmdfService      = VoidInput, VoidInput_Install
+UmdfServiceOrder = VoidInput
+
+; =================== Windows 10 ===================================
+; Older wudfrd.inf does not export the filter directives, so we add the WUDFRd
+; service and upper-filter entry directly.
+
+[VoidInput_Win10.NT]
+CopyFiles = UMDriverCopy
+Include   = hidvhf.inf
+Needs     = vhfservice.NT
+
+[VoidInput_Win10.NT.HW]
+Include = hidvhf.inf
+Needs   = vhfservice.NT.HW
+AddReg  = VoidInput_AddReg
+
+[VoidInput_Win10.NT.Services]
+Include    = hidvhf.inf
+Needs      = vhfservice.NT.Services
+AddService = WUDFRd,0x000001f8,WUDFRD_ServiceInstall
+
+[VoidInput_Win10.NT.Filters]
+AddFilter = WUDFRd,,WUDFRD_UpperFilterPosition
+
+[VoidInput_Win10.NT.Wdf]
+UmdfService      = VoidInput, VoidInput_Install
+UmdfServiceOrder = VoidInput
+
+[WUDFRD_UpperFilterPosition]
+FilterPosition = Upper
+
+[WUDFRD_ServiceInstall]
+DisplayName   = %WudfRdDisplayName%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %12%\WUDFRd.sys
+
+[VoidInput_Install]
+UmdfLibraryVersion = 2.25.0
+ServiceBinary      = %13%\VoidInput.dll
+
+; Restrict the control device to administrators, SYSTEM, and other UMDF drivers
+; so emulated HID devices cannot be driven by arbitrary callers.
+[VoidInput_AddReg]
+HKR,, "Security",, "D:P(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;UD)"
+
+[UMDriverCopy]
+VoidInput.dll
+
+; =================== Strings ==================================
+
+[Strings]
+ManufacturerName  = "Void Virtual Driver"
+DiskName          = "VoidInput Installation Disk"
+WudfRdDisplayName = "Windows Driver Foundation - User-mode Driver Framework Reflector"
+DeviceName        = "Void Virtual Input"
