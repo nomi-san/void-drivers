@@ -15,3 +15,17 @@ obj/
 *.obj
 *.o
 *.log
+
+# VS / WDK build output
+x64/
+ARM64/
+Win32/
+.vs/
+*.pdb
+*.exp
+*.lib
+*.ilk
+*.tlog
+*.cer
+*.cat
+*.user
