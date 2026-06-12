@@ -1,0 +1,17 @@
+.refs/
+.claude/
+.venv/
+.tools/
+__pycache__/
+
+.mcp.json
+CLAUDE.md
+AGENTS.md
+
+bin/
+obj/
+*.dll
+*.sys
+*.obj
+*.o
+*.log
