@@ -18,7 +18,7 @@ fully-equipped gaming PC to games and anti-cheat (Vanguard, EAC, BattlEye):
 | Component | Tech | Runs in | What it does |
 |---|---|---|---|
 | **VoidDisplay** | IddCx UMDF | user mode | Adds virtual monitors for video capture / remote streaming |
-| **VoidInput** | UDECX virtual USB | kernel | Hosts virtual USB mouse, keyboard, Xbox 360 / DS4 / DS5 gamepads, and touch |
+| **VoidInput** | UMDF + VHF (HID) | user mode | Hosts virtual HID mouse, keyboard, Xbox One / DS4 / DS5 gamepads, and touch |
 | **libvoidrv** | C++ SDK (C ABI) | - | One library that drives both, via `voidrv.h` |
 | **voidctl** | CLI | - | Command-line control + test harness |
 
@@ -29,9 +29,10 @@ devices that persist on your terms, driven by a single SDK with no session coupl
 
 - **Headless hosts have no GPU display output, no input devices.** Void supplies both
   as real device nodes, so capture APIs see a monitor and games see real controllers.
-- **Real input, not `SendInput`.** VoidInput presents genuine USB devices (real
-  VID/PID, true **XInput** for Xbox) built on the in-box UDECX framework, so input
-  survives anti-cheat that blocks injected events.
+- **Real input, not `SendInput`.** VoidInput presents genuine HID devices (real
+  VID/PID, real report descriptors) built on the in-box Virtual HID Framework, so
+  input survives anti-cheat that blocks injected events. Gamepads are HID, reaching
+  games through DirectInput, Windows.Gaming.Input, and Steam Input.
 - **No keepalive.** Void displays persist until you explicitly remove them - no
   per-display heartbeat or periodic ping to keep them alive.
 
@@ -39,9 +40,10 @@ devices that persist on your terms, driven by a single SDK with no session coupl
 
 - **VoidDisplay** - up to 8 virtual monitors, default 1920x1080@60, custom `VVD`
   EDID, SDR first (HDR planned). Persists across sessions, no heartbeat.
-- **VoidInput** - a UDECX virtual USB bus (`Root\Void\VUSB`) into which child devices
-  plug. Child devices clone genuine descriptors so they're indistinguishable from real
-  hardware; only the bus is Void-branded.
+- **VoidInput** - a UMDF driver on the in-box Virtual HID Framework that creates
+  virtual HID devices on demand. Each clones a genuine HID identity (VID/PID + report
+  descriptor) so it's indistinguishable from real hardware to applications; only the
+  control interface is Void-branded.
 - **One control surface** - both drivers are driven through `DeviceIoControl`, wrapped
   by `libvoidrv` so host apps never touch raw IOCTLs.
 
@@ -50,7 +52,7 @@ devices that persist on your terms, driven by a single SDK with no session coupl
 Pre-alpha - project scaffolding stage. Implementation order:
 
 1. **VoidDisplay** (in progress) - virtual monitor + control IOCTLs.
-2. **VoidInput** - UDECX bus -> HID mouse -> keyboard -> Xbox 360 -> DS4/DS5 -> touch.
+2. **VoidInput** - VHF enumerator -> HID mouse -> keyboard -> Xbox One -> DS4/DS5 -> touch.
 3. **libvoidrv / voidctl** - SDK + CLI alongside each milestone.
 
 ## Building
@@ -62,20 +64,22 @@ Requires **Visual Studio 2022** + **WDK 10.0.26100** (with VS integration), x64.
 msbuild Void.sln /p:Configuration=Debug /p:Platform=x64
 ```
 
-Drivers are **test-signed** for local development. Enable test-signing on the target:
+Both drivers are UMDF (user mode), so they install with a local test certificate
+(placed in `Root` + `TrustedPublisher`) - **no `testsigning` mode and no Microsoft
+attestation required**:
 
 ```pwsh
-bcdedit /set testsigning on   # then reboot
+# create a self-signed test cert, then sign the .dll + .cat and trust the cert
 ```
 
-Production signing (EV cert + Microsoft attestation for the kernel driver) is a
-deferred release task.
+Production signing is a directly-applied OV/EV Authenticode signature - a deferred
+release task.
 
 ## Repository layout
 
 ```
 void-display/   VoidDisplay (IddCx UMDF, C++)
-void-input/     VoidInput  (UDECX KMDF, C)
+void-input/     VoidInput  (UMDF + VHF HID, C++)
 libvoidrv/      SDK (voidrv.h)
 voidctl/        CLI
 docs/           Design docs

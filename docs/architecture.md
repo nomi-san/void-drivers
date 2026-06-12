@@ -23,20 +23,20 @@ and the OS as genuine hardware.
              v                                    v
   +----------------------+            +-------------------------+
   |     VoidDisplay      |            |        VoidInput        |
-  |  IddCx UMDF (.dll)   |            |   UDECX KMDF (.sys)     |
-  |  user mode           |            |   kernel mode           |
+  |  IddCx UMDF (.dll)   |            |   UMDF + VHF (.dll)     |
+  |  user mode           |            |   user mode             |
   +----------+-----------+            +------------+------------+
              |                                     |
              v                                     v
-   virtual monitors                    virtual USB bus + child
-   (1..8 displays)                     devices: mouse, keyboard,
-                                       Xbox 360 / DS4 / DS5, touch
+   virtual monitors                    virtual HID devices:
+   (1..8 displays)                     mouse, keyboard, touch,
+                                       Xbox One / DS4 / DS5
 ```
 
 | Component | Kind | Runs in | Responsibility |
 |-----------|------|---------|----------------|
 | VoidDisplay | IddCx Indirect Display Driver (UMDF) | user mode | Create/destroy virtual monitors, advertise modes, hand frames to the OS compositor |
-| VoidInput | UDECX virtual USB bus (KMDF) | kernel mode | Host a virtual USB controller and plug/unplug emulated USB devices |
+| VoidInput | UMDF driver on the Virtual HID Framework (VHF) | user mode | Create/destroy virtual HID devices (mouse, keyboard, gamepads, touch) and relay reports |
 | libvoidrv | Static library, `voidrv.h` | user mode | C ABI wrapper over both drivers' IOCTL interfaces |
 | voidctl | CLI executable | user mode | Manual control and per-milestone smoke testing |
 
@@ -47,7 +47,7 @@ Both drivers expose a private device interface and are driven entirely through
 application calls into `libvoidrv` synchronously.
 
 - VoidDisplay device interface GUID: `{40255101-a910-441c-84d6-9f027197fa70}`
-- VoidInput bus interface GUID: `{7b0c8d49-54fc-45ca-ab47-6a572f2ff510}`
+- VoidInput control interface GUID: `{7b0c8d49-54fc-45ca-ab47-6a572f2ff510}`
 
 `libvoidrv` opens each interface by GUID (enumerate device interfaces, then
 `CreateFile` the device path) and presents a typed API. Host code never builds raw
@@ -55,9 +55,9 @@ IOCTL buffers.
 
 ### Hot path
 
-Per-frame input (mouse moves, pad reports) is sent through VoidInput as overlapped
-endpoint-write IOCTLs - one report per call, no polling. VoidDisplay frames are
-delivered through the IddCx swap-chain path, not through IOCTL.
+Per-frame input (mouse moves, pad reports) is submitted to VoidInput as HID input
+reports - one `WriteFile` per report on the device handle, no polling. VoidDisplay
+frames are delivered through the IddCx swap-chain path, not through IOCTL.
 
 ## Device model
 
@@ -71,13 +71,16 @@ delivered through the IddCx swap-chain path, not through IOCTL.
 
 ### VoidInput
 
-- One root-enumerated PnP device (hardware id `Root\Void\VUSB`) acting as a virtual
-  USB host controller via UDECX.
-- Child devices are emulated USB devices that plug into that virtual bus. Each child
-  presents a complete, standard USB device descriptor so the OS binds the normal
-  in-box class driver (HID, XInput/XUSB) - the children are indistinguishable from
-  physical USB hardware.
-- Design doc to follow (`voidinput-design.md`).
+- One root-enumerated PnP device (hardware id `Root\Void\Input`), a UMDF driver
+  layered on the in-box Virtual HID Framework (VHF).
+- Each virtual input device is created on demand (one `VhfCreate` per device) and
+  enumerated by the OS under HIDClass with a cloned HID identity (VID/PID + report
+  descriptor), so it binds the normal in-box HID class driver and is
+  indistinguishable from a real HID device to applications.
+- Gamepads are HID (Xbox One, DualShock 4, DualSense), reaching games via
+  DirectInput / Windows.Gaming.Input / Steam Input. Real XInput/`xusb` is out of
+  scope (it would require a kernel USB bus).
+- See [voidinput-design.md](voidinput-design.md).
 
 ## Persistence model
 
@@ -93,15 +96,17 @@ Void favors explicit lifetime over session coupling:
 ## Build, signing, and platform
 
 - Target: x64, Windows 10 21H2 / Windows 11.
-- VoidDisplay is a user-mode UMDF driver; VoidInput is a kernel-mode driver.
-- Development builds are test-signed; enable test-signing on the target host before
-  installing. Production signing is a separate, later release task.
+- Both VoidDisplay and VoidInput are user-mode UMDF drivers (VoidInput layers on
+  the in-box VHF); neither enters the kernel.
+- Development builds are signed with a local test certificate; no `testsigning`
+  mode and no Microsoft attestation are required. Production signing (a directly
+  applied OV/EV Authenticode signature) is a separate, later release task.
 
 ## Threading and I/O
 
 - VoidDisplay runs in the UMDF host process; IddCx callbacks drive monitor and
   swap-chain lifetime. Control IOCTLs mutate a small in-memory display table guarded
   by a lock.
-- VoidInput uses KMDF queues for control IOCTLs and per-endpoint I/O. Endpoint reads
-  pend until data is available; writes complete as reports are consumed. No busy
-  loops.
+- VoidInput runs in the UMDF host process. Control IOCTLs and input-report writes
+  go through a WDF queue; VHF callbacks deliver output/feature requests, which pend
+  on an inverted read until the host services them. No busy loops.
