@@ -38,15 +38,23 @@ typedef struct _VOIDINPUT_FILE_CONTEXT {
     VHFHANDLE     VhfHandle;         // non-null once the device is created
     VOIDINPUT_DEVICE_TYPE Type;      // VoidInputDeviceNone until created
     BOOLEAN       NumberedReports;   // the device's reports carry a report-id byte
+    LONG          LiveIndex;         // owned slot in the driver live table, -1 if none
 } VOIDINPUT_FILE_CONTEXT, *PVOIDINPUT_FILE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VOIDINPUT_FILE_CONTEXT, VoidInputFileGetContext)
 
+// One live virtual device in the driver-wide table.
+typedef struct _VOIDINPUT_LIVE_SLOT {
+    BOOLEAN               InUse;
+    VOIDINPUT_DEVICE_TYPE Type;
+    USHORT                Vid;
+    USHORT                Pid;
+} VOIDINPUT_LIVE_SLOT;
+
 // Driver-wide device context: tracks the live device set for capacity + LIST.
 typedef struct _VOIDINPUT_DEVICE_CONTEXT {
-    WDFDEVICE   Device;
-    WDFWAITLOCK Lock;                // guards the live-device table below
-    UINT32      LiveCount;
-    VOIDINPUT_ENTRY Live[VOIDINPUT_MAX_DEVICES];
+    WDFDEVICE           Device;
+    WDFWAITLOCK         Lock;        // guards the slot table below
+    VOIDINPUT_LIVE_SLOT Slots[VOIDINPUT_MAX_DEVICES];
 } VOIDINPUT_DEVICE_CONTEXT, *PVOIDINPUT_DEVICE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VOIDINPUT_DEVICE_CONTEXT, VoidInputDeviceGetContext)
 

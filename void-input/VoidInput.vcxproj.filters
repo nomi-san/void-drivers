@@ -16,11 +16,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="VoidInput.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Devices.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VoidInput.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Public.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Trace.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Devices.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Inf Include="VoidInput.inf"><Filter>Driver Files</Filter></Inf>

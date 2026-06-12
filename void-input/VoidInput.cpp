@@ -1,4 +1,147 @@
 #include "VoidInput.h"
+#include "Devices.h"
+
+// Per-instance container id base for input children (project branding). The low
+// byte is varied per slot so multiple devices are distinct but stable.
+static const GUID kVoidInputContainerBase =
+    { 0x61912c91, 0x979a, 0x40e7, { 0xb4, 0x2a, 0xab, 0xf6, 0xd9, 0x17, 0xbf, 0xf3 } };
+
+static BOOLEAN VoidInputIsGamepadType(VOIDINPUT_DEVICE_TYPE type)
+{
+    return type == VoidInputDeviceXboxOne ||
+           type == VoidInputDeviceDS4 ||
+           type == VoidInputDeviceDS5;
+}
+
+// ---------------------------------------------------------------------------
+// Device create / destroy
+//
+// Create reserves a live slot under the lock (enforcing the capacity rules),
+// then builds the VHF config from the type's compiled-in descriptor and calls
+// VhfCreate / VhfStart outside the lock (they can be heavy). On failure the
+// reservation is rolled back.
+// ---------------------------------------------------------------------------
+static NTSTATUS VoidInputDoCreate(PVOIDINPUT_DEVICE_CONTEXT dc,
+                                  PVOIDINPUT_FILE_CONTEXT fc,
+                                  const VOIDINPUT_CREATE* req)
+{
+    if (fc->VhfHandle) {
+        return STATUS_INVALID_DEVICE_STATE;   // one device per handle
+    }
+
+    const VOIDINPUT_DEVICE_DESC* desc =
+        VoidInputGetDeviceDesc((VOIDINPUT_DEVICE_TYPE)req->Type);
+    if (!desc) {
+        VOID_LOG("CREATE type=%u: not implemented", req->Type);
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    LONG slot = -1;
+    WdfWaitLockAcquire(dc->Lock, NULL);
+    {
+        UINT32 total = 0, gamepads = 0;
+        LONG   firstFree = -1;
+        for (LONG i = 0; i < VOIDINPUT_MAX_DEVICES; ++i) {
+            if (dc->Slots[i].InUse) {
+                ++total;
+                if (VoidInputIsGamepadType(dc->Slots[i].Type)) {
+                    ++gamepads;
+                }
+                if (desc->Singleton && dc->Slots[i].Type == desc->Type) {
+                    WdfWaitLockRelease(dc->Lock);
+                    VOID_LOG("CREATE type=%u: singleton already present", req->Type);
+                    return STATUS_RESOURCE_IN_USE;
+                }
+            } else if (firstFree < 0) {
+                firstFree = i;
+            }
+        }
+        if (total >= VOIDINPUT_MAX_DEVICES || firstFree < 0) {
+            WdfWaitLockRelease(dc->Lock);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        if (desc->IsGamepad && gamepads >= 4) {
+            WdfWaitLockRelease(dc->Lock);
+            VOID_LOG("CREATE type=%u: gamepad cap (4) reached", req->Type);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        slot = firstFree;
+        dc->Slots[slot].InUse = TRUE;          // reserve
+        dc->Slots[slot].Type  = desc->Type;
+        dc->Slots[slot].Vid   = 0;
+        dc->Slots[slot].Pid   = 0;
+    }
+    WdfWaitLockRelease(dc->Lock);
+
+    USHORT vid = req->VendorId      ? req->VendorId      : desc->DefaultVid;
+    USHORT pid = req->ProductId     ? req->ProductId     : desc->DefaultPid;
+    USHORT ver = req->VersionNumber ? req->VersionNumber : desc->DefaultVersion;
+
+    fc->VhfConfig.VhfClientContext       = fc;
+    fc->VhfConfig.VendorID               = vid;
+    fc->VhfConfig.ProductID              = pid;
+    fc->VhfConfig.VersionNumber          = ver;
+    fc->VhfConfig.ReportDescriptor       = (PUCHAR)desc->ReportDescriptor;
+    fc->VhfConfig.ReportDescriptorLength = desc->ReportDescriptorLength;
+
+    GUID container = kVoidInputContainerBase;
+    container.Data4[7] = (UCHAR)(container.Data4[7] + (UCHAR)slot);
+    fc->VhfConfig.ContainerID = container;
+
+    // Output/feature event callbacks are wired when the first type that emits
+    // output reports (the Xbox pad) lands; the mouse is input-only.
+
+    NTSTATUS status = VhfCreate(&fc->VhfConfig, &fc->VhfHandle);
+    if (!NT_SUCCESS(status)) {
+        VOID_LOG("VhfCreate type=%u failed 0x%08X", req->Type, status);
+        fc->VhfHandle = nullptr;
+        WdfWaitLockAcquire(dc->Lock, NULL);
+        dc->Slots[slot].InUse = FALSE;
+        WdfWaitLockRelease(dc->Lock);
+        return status;
+    }
+
+    status = VhfStart(fc->VhfHandle);
+    if (!NT_SUCCESS(status)) {
+        VOID_LOG("VhfStart type=%u failed 0x%08X", req->Type, status);
+        VhfDelete(fc->VhfHandle, TRUE);
+        fc->VhfHandle = nullptr;
+        WdfWaitLockAcquire(dc->Lock, NULL);
+        dc->Slots[slot].InUse = FALSE;
+        WdfWaitLockRelease(dc->Lock);
+        return status;
+    }
+
+    WdfWaitLockAcquire(dc->Lock, NULL);
+    dc->Slots[slot].Vid = vid;
+    dc->Slots[slot].Pid = pid;
+    WdfWaitLockRelease(dc->Lock);
+
+    fc->Type            = desc->Type;
+    fc->NumberedReports = desc->NumberedReports;
+    fc->LiveIndex       = slot;
+
+    VOID_LOG("Created device type=%u vid=0x%04X pid=0x%04X at slot %ld",
+             req->Type, vid, pid, slot);
+    return STATUS_SUCCESS;
+}
+
+static void VoidInputDoDestroy(PVOIDINPUT_DEVICE_CONTEXT dc, PVOIDINPUT_FILE_CONTEXT fc)
+{
+    if (!fc->VhfHandle) {
+        return;   // idempotent: no device is a no-op
+    }
+    VhfDelete(fc->VhfHandle, TRUE);
+    fc->VhfHandle = nullptr;
+
+    if (fc->LiveIndex >= 0) {
+        WdfWaitLockAcquire(dc->Lock, NULL);
+        dc->Slots[fc->LiveIndex].InUse = FALSE;
+        WdfWaitLockRelease(dc->Lock);
+        fc->LiveIndex = -1;
+    }
+    fc->Type = VoidInputDeviceNone;
+}
 
 // ---------------------------------------------------------------------------
 // DriverEntry / device add
@@ -52,9 +195,8 @@ NTSTATUS VoidInputDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     }
 
     auto* dc = VoidInputDeviceGetContext(device);
-    dc->Device    = device;
-    dc->LiveCount = 0;
-    RtlZeroMemory(dc->Live, sizeof(dc->Live));
+    dc->Device = device;
+    RtlZeroMemory(dc->Slots, sizeof(dc->Slots));
 
     WDF_OBJECT_ATTRIBUTES lockAttr;
     WDF_OBJECT_ATTRIBUTES_INIT(&lockAttr);
@@ -100,6 +242,7 @@ VOID VoidInputFileCreate(WDFDEVICE Device, WDFREQUEST Request, WDFFILEOBJECT Fil
     RtlZeroMemory(fc, sizeof(*fc));
     fc->FileObject = FileObject;
     fc->Type       = VoidInputDeviceNone;
+    fc->LiveIndex  = -1;
 
     WDF_OBJECT_ATTRIBUTES attr;
     WDF_OBJECT_ATTRIBUTES_INIT(&attr);
@@ -136,14 +279,10 @@ _Use_decl_annotations_
 VOID VoidInputFileClose(WDFFILEOBJECT FileObject)
 {
     auto* fc = VoidInputFileGetContext(FileObject);
+    auto* dc = VoidInputDeviceGetContext(WdfFileObjectGetDevice(FileObject));
 
-    if (fc->VhfHandle) {
-        // Synchronous teardown: the HID device departs and VHF drains.
-        VhfDelete(fc->VhfHandle, TRUE);
-        fc->VhfHandle = nullptr;
-        // TODO(device-type milestones): drop this device from the driver live
-        // table once CREATE registers it there.
-    }
+    // Tears down the HID device (if any) and frees its live slot.
+    VoidInputDoDestroy(dc, fc);
 
     if (fc->VhfIoTarget) {
         WdfObjectDelete(fc->VhfIoTarget);
@@ -179,11 +318,15 @@ VOID VoidInputIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request,
         VOIDINPUT_STATE* out = nullptr;
         status = WdfRequestRetrieveOutputBuffer(Request, sizeof(*out), (PVOID*)&out, nullptr);
         if (NT_SUCCESS(status)) {
-            WdfWaitLockAcquire(dc->Lock, NULL);
             RtlZeroMemory(out, sizeof(*out));
-            out->Count = dc->LiveCount;
-            for (UINT32 i = 0; i < dc->LiveCount && i < VOIDINPUT_MAX_DEVICES; ++i) {
-                out->Entries[i] = dc->Live[i];
+            WdfWaitLockAcquire(dc->Lock, NULL);
+            for (UINT32 i = 0; i < VOIDINPUT_MAX_DEVICES; ++i) {
+                if (dc->Slots[i].InUse) {
+                    VOIDINPUT_ENTRY* e = &out->Entries[out->Count++];
+                    e->Type      = dc->Slots[i].Type;
+                    e->VendorId  = dc->Slots[i].Vid;
+                    e->ProductId = dc->Slots[i].Pid;
+                }
             }
             WdfWaitLockRelease(dc->Lock);
             info = sizeof(*out);
@@ -194,28 +337,13 @@ VOID VoidInputIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request,
         VOIDINPUT_CREATE* in = nullptr;
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(*in), (PVOID*)&in, nullptr);
         if (NT_SUCCESS(status)) {
-            if (fc->VhfHandle) {
-                status = STATUS_INVALID_DEVICE_STATE;   // one device per handle
-            } else {
-                // Device-type descriptors (mouse, keyboard, Xbox One, DS4, DS5,
-                // touch) are added in the build-order milestones that follow the
-                // enumerator bring-up. Until a type's compiled-in HID descriptor
-                // exists, the typed VhfCreate path has nothing to build from.
-                VOID_LOG("CREATE type=%u: device-type descriptors not implemented yet",
-                         in->Type);
-                status = STATUS_NOT_SUPPORTED;
-            }
+            status = VoidInputDoCreate(dc, fc, in);
         }
         break;
     }
     case IOCTL_VOIDINPUT_DESTROY: {
-        if (fc->VhfHandle) {
-            VhfDelete(fc->VhfHandle, TRUE);
-            fc->VhfHandle = nullptr;
-            fc->Type      = VoidInputDeviceNone;
-            // TODO(device-type milestones): drop from the driver live table.
-        }
-        status = STATUS_SUCCESS;   // idempotent: no device is a no-op
+        VoidInputDoDestroy(dc, fc);
+        status = STATUS_SUCCESS;   // idempotent
         break;
     }
     case IOCTL_VOIDINPUT_GET_EVENT:

@@ -12,11 +12,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="VoidInput.cpp" />
+    <ClCompile Include="Devices.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VoidInput.h" />
     <ClInclude Include="Public.h" />
     <ClInclude Include="Trace.h" />
+    <ClInclude Include="Devices.h" />
   </ItemGroup>
   <ItemGroup>
     <Inf Include="VoidInput.inf" />
