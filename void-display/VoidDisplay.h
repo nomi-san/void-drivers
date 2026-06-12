@@ -112,6 +112,7 @@ public:
 
 private:
     NTSTATUS CreateMonitorLocked(UINT32 index, const VOIDDISPLAY_MODE& mode);
+    void     RestoreDisplays();   // recreate SDK-persisted displays at init (RestoreOnStart)
 
     WDFDEVICE       m_WdfDevice;
     IDDCX_ADAPTER   m_Adapter;

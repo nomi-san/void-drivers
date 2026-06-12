@@ -196,16 +196,26 @@ planned `edid.md`. HDR/extension blocks are out of scope for v1.
 
 ## 6. Persistence
 
-Display state is optional-persistent so a configured host survives reboot:
+Display state is persistent so a configured host survives a device restart or
+reboot:
 
-- Under the device hardware key: `...\PersistedDisplays\NN` (NN = slot 00..07) with
-  values `Width`, `Height`, `RefreshHz`, and a top-level `RestoreOnStart` flag.
-- On `ADD`/`REMOVE`/`SET_MODE`, the table is written back.
-- On adapter init-finished, if `RestoreOnStart` is set, each persisted slot is
-  recreated before control IOCTLs are served.
+- Stored under the driver's WUDF service `Parameters` key as a `PersistedDisplays`
+  value (REG_BINARY array of packed `{Index, Width, Height, RefreshHz}` UINT32
+  entries, one per active slot), alongside a `RestoreOnStart` REG_DWORD (absent or
+  non-zero means restore; `0` disables it).
+- **The SDK writes it.** A UMDF host process has no registry write rights (both the
+  device hardware key and the service `Parameters` key return access-denied), so the
+  driver cannot self-persist. `libvoidrv` instead mirrors each `Add`/`Remove`/
+  `SetMode` into `PersistedDisplays` (best-effort, needs elevation) - the same
+  split used for custom modes (section 3).
+- On adapter init-finished, after the custom modes are loaded and before any control
+  IOCTL is served, the driver reads `PersistedDisplays` (if `RestoreOnStart`) and
+  recreates each display at its stored slot and mode. Monitor identities are stable
+  per slot (ContainerId + EDID serial), so Windows also restores each display's last
+  resolution and desktop position.
 
-Persistence is a convenience layer over the in-memory table; the in-memory table is
-always the source of truth while the driver is running.
+The in-memory slot table is the source of truth while the driver runs; the registry
+copy is what a fresh adapter instance restores from.
 
 ## 7. Preferred render GPU (parent adapter)
 

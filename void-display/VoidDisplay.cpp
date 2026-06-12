@@ -474,7 +474,10 @@ void VoidDisplayDevice::FinishInit(IDDCX_ADAPTER adapter)
     // present; this only adds user-defined extras.
     VoidModesLoadPersisted();
 
-    // TODO: restore persisted displays from the registry here.
+    // Recreate the displays that were active before the last unload so a headless
+    // host comes back configured (gated on RestoreOnStart; default on). Done after
+    // the modes are loaded and before any control IOCTL is served.
+    RestoreDisplays();
 }
 
 NTSTATUS VoidDisplayDevice::CreateMonitorLocked(UINT32 index, const VOIDDISPLAY_MODE& mode)
@@ -625,6 +628,70 @@ void VoidDisplayDevice::GetState(VOIDDISPLAY_STATE* out)
         }
     }
     WdfWaitLockRelease(m_Lock);
+}
+
+// On-disk form of one persisted display: its slot index plus mode. The SDK writes
+// a REG_BINARY array of these under the driver's WUDF service Parameters key (the
+// UMDF host itself has no registry write rights); the driver reads it here. Same
+// key the driver reads PreferredRenderAdapterVendorId and the custom modes from.
+struct VoidPersistEntry
+{
+    UINT32 Index;
+    UINT32 Width;
+    UINT32 Height;
+    UINT32 RefreshHz;
+};
+
+static const wchar_t kVoidParamsKey[] =
+    L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\WUDF\\Services\\VoidDisplay\\Parameters";
+
+// Recreate displays the SDK persisted to the Parameters key. Called once at
+// adapter init,
+// after the custom modes are loaded and before any control IOCTL is served. Gated
+// on RestoreOnStart (REG_DWORD; absent or non-zero means restore).
+void VoidDisplayDevice::RestoreDisplays()
+{
+    DWORD restore = 1;  // default on; left unchanged when the value is absent
+    DWORD cb = sizeof(restore);
+    RegGetValueW(HKEY_LOCAL_MACHINE, kVoidParamsKey, L"RestoreOnStart",
+                 RRF_RT_REG_DWORD, NULL, &restore, &cb);
+    if (restore == 0) {
+        VOID_LOG("RestoreOnStart=0; not restoring displays");
+        return;
+    }
+
+    VoidPersistEntry entries[VOIDDISPLAY_MAX_DISPLAYS];
+    DWORD byteLen = sizeof(entries);
+    LSTATUS rs = RegGetValueW(HKEY_LOCAL_MACHINE, kVoidParamsKey, L"PersistedDisplays",
+                              RRF_RT_REG_BINARY, NULL, entries, &byteLen);
+    if (rs != ERROR_SUCCESS || byteLen == 0) {
+        return;  // none persisted
+    }
+
+    UINT32 count    = byteLen / (DWORD)sizeof(VoidPersistEntry);
+    UINT32 restored = 0;
+    WdfWaitLockAcquire(m_Lock, NULL);
+    for (UINT32 i = 0; i < count; ++i) {
+        UINT32 idx = entries[i].Index;
+        if (idx >= VOIDDISPLAY_MAX_DISPLAYS || m_Slots[idx].InUse) {
+            continue;  // bad index or slot already taken
+        }
+        VOIDDISPLAY_MODE mode;
+        mode.Width     = entries[i].Width;
+        mode.Height    = entries[i].Height;
+        mode.RefreshHz = entries[i].RefreshHz;
+        if (mode.Width == 0 || mode.Height == 0 || mode.RefreshHz == 0) {
+            mode.Width     = VOID_DEFAULT_WIDTH;
+            mode.Height    = VOID_DEFAULT_HEIGHT;
+            mode.RefreshHz = VOID_DEFAULT_REFRESH;
+        }
+        VoidModesAdd(mode.Width, mode.Height, mode.RefreshHz);  // ensure advertised
+        if (NT_SUCCESS(CreateMonitorLocked(idx, mode))) {
+            ++restored;
+        }
+    }
+    WdfWaitLockRelease(m_Lock);
+    VOID_LOG("Restored %u of %u persisted display(s)", restored, count);
 }
 
 NTSTATUS VoidDisplayDevice::AddMode(const VOIDDISPLAY_MODE& mode)

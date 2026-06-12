@@ -128,6 +128,7 @@ uint32_t VoidrvDisplayVersion(VoidrvDisplayHandle handle)
 }
 
 static bool VoidApplyMode(uint32_t index, const VoidrvDisplayMode* mode);
+static void PersistDisplay(uint32_t index, const VoidrvDisplayMode* mode, bool present);
 
 int VoidrvDisplayAdd(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
 {
@@ -158,6 +159,14 @@ int VoidrvDisplayAdd(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
             Sleep(150);
         }
     }
+
+    // Persist for restore-on-start. Record the effective mode (the driver's
+    // default when the request was zeroed).
+    VoidrvDisplayMode eff = { 1920, 1080, 60 };
+    if (mode && mode->Width && mode->Height && mode->RefreshHz) {
+        eff = *mode;
+    }
+    PersistDisplay((uint32_t)index, &eff, true);
     return (int)index;
 }
 
@@ -167,7 +176,11 @@ bool VoidrvDisplayRemove(VoidrvDisplayHandle handle, uint32_t index)
         return false;
     }
     ULONG i = index;
-    return Control(handle->Device, IOCTL_VOIDDISPLAY_REMOVE, &i, sizeof(i), nullptr, 0, nullptr);
+    bool ok = Control(handle->Device, IOCTL_VOIDDISPLAY_REMOVE, &i, sizeof(i), nullptr, 0, nullptr);
+    if (ok) {
+        PersistDisplay(index, nullptr, false);
+    }
+    return ok;
 }
 
 // Apply a mode to the index-th active VoidDisplay monitor via the GDI display
@@ -232,7 +245,11 @@ bool VoidrvDisplaySetMode(VoidrvDisplayHandle handle, uint32_t index, const Void
     Control(handle->Device, IOCTL_VOIDDISPLAY_SET_MODE, &wire, sizeof(wire), nullptr, 0, nullptr);
 
     // ...then apply the actual OS-level resolution change.
-    return VoidApplyMode(index, mode);
+    bool applied = VoidApplyMode(index, mode);
+
+    // Persist the new mode so restore-on-start brings it back.
+    PersistDisplay(index, mode, true);
+    return applied;
 }
 
 bool VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state)
@@ -302,6 +319,62 @@ static void PersistCustomMode(const VoidrvDisplayMode* mode, bool add)
 
     RegSetKeyValueW(HKEY_LOCAL_MACHINE, kVoidParamsKey, L"CustomModes",
                     REG_BINARY, list, count * (DWORD)sizeof(VoidrvDisplayMode));
+}
+
+// One persisted display, matching the driver's VoidPersistEntry layout.
+struct VoidrvPersistEntry {
+    uint32_t Index;
+    uint32_t Width;
+    uint32_t Height;
+    uint32_t RefreshHz;
+};
+
+// Mirror a display add / setmode / remove into the driver's Parameters key so the
+// driver recreates it at init (RestoreOnStart). Stored as a REG_BINARY array keyed
+// by slot index. Best-effort: the HKLM write needs elevation and a failure does
+// not affect the live operation.
+static void PersistDisplay(uint32_t index, const VoidrvDisplayMode* mode, bool present)
+{
+    VoidrvPersistEntry list[VOIDRV_MAX_DISPLAYS];
+    DWORD cb = sizeof(list);
+    DWORD count = 0;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, kVoidParamsKey, L"PersistedDisplays",
+                     RRF_RT_REG_BINARY, nullptr, list, &cb) == ERROR_SUCCESS) {
+        count = cb / (DWORD)sizeof(VoidrvPersistEntry);
+    }
+
+    DWORD found = count;
+    for (DWORD i = 0; i < count; ++i) {
+        if (list[i].Index == index) {
+            found = i;
+            break;
+        }
+    }
+
+    if (present) {
+        if (found == count) {
+            if (count >= VOIDRV_MAX_DISPLAYS) {
+                return;  // full
+            }
+            list[count].Index = index;
+            found = count;
+            ++count;
+        }
+        list[found].Width     = mode->Width;
+        list[found].Height    = mode->Height;
+        list[found].RefreshHz = mode->RefreshHz;
+    } else {
+        if (found == count) {
+            return;  // not present
+        }
+        for (DWORD i = found + 1; i < count; ++i) {
+            list[i - 1] = list[i];
+        }
+        --count;
+    }
+
+    RegSetKeyValueW(HKEY_LOCAL_MACHINE, kVoidParamsKey, L"PersistedDisplays",
+                    REG_BINARY, list, count * (DWORD)sizeof(VoidrvPersistEntry));
 }
 
 bool VoidrvDisplayAddMode(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
