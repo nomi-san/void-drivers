@@ -8,6 +8,9 @@
  *   voidctl display add [WxH@Hz]
  *   voidctl display remove <index>
  *   voidctl display setmode <index> <WxH@Hz>
+ *   voidctl mouse status | version
+ *   voidctl mouse move <dx> <dy>
+ *   voidctl mouse demo [seconds]
  */
 
 #include "voidrv.h"
@@ -17,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 
 static void PrintLastError(const char* what)
 {
@@ -36,7 +40,12 @@ static int Usage()
         "  voidctl display setmode <index> <WxH@Hz>\n"
         "  voidctl display modes             (list advertised modes)\n"
         "  voidctl display addmode <WxH@Hz>\n"
-        "  voidctl display removemode <WxH@Hz>\n");
+        "  voidctl display removemode <WxH@Hz>\n"
+        "\n"
+        "  voidctl mouse status\n"
+        "  voidctl mouse version\n"
+        "  voidctl mouse move <dx> <dy>      (one relative move)\n"
+        "  voidctl mouse demo [seconds]      (trace a circle; default 5s)\n");
     return 1;
 }
 
@@ -225,15 +234,102 @@ static int CmdAddRemoveMode(int argc, char** argv, bool add)
     return ok ? 0 : 1;
 }
 
+// ---------------------------------------------------------------------------
+// mouse
+// ---------------------------------------------------------------------------
+static int CmdMouseStatus()
+{
+    VoidrvStatus s = VoidrvInputQueryStatus();
+    const char* text =
+        s == VOIDRV_STATUS_OK            ? "ok (present)" :
+        s == VOIDRV_STATUS_NOT_INSTALLED ? "not installed" :
+                                           "inaccessible";
+    std::printf("VoidInput: %s\n", text);
+    return s == VOIDRV_STATUS_OK ? 0 : 1;
+}
+
+static int CmdMouseVersion()
+{
+    uint32_t ver = VoidrvInputVersion();
+    if (ver == 0) {
+        std::printf("error: VoidInput version query failed (is it installed?)\n");
+        return 1;
+    }
+    std::printf("VoidInput interface version: %u\n", ver);
+    return 0;
+}
+
+static int CmdMouseMove(int argc, char** argv)
+{
+    if (argc < 2) {
+        std::printf("error: mouse move needs <dx> <dy>\n");
+        return 1;
+    }
+    int dx = (int)std::strtol(argv[0], nullptr, 10);
+    int dy = (int)std::strtol(argv[1], nullptr, 10);
+
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_MOUSE);
+    if (!h) {
+        std::printf("error: cannot create mouse (is VoidInput installed?)\n");
+        return 1;
+    }
+    bool ok = VoidrvInputMouseMoveRelative(h, (int16_t)dx, (int16_t)dy, 0, 0, 0);
+    Sleep(50);   // let the report deliver before the device unplugs on close
+    VoidrvInputClose(h);
+    std::printf(ok ? "moved by (%d, %d)\n" : "error: move failed\n", dx, dy);
+    return ok ? 0 : 1;
+}
+
+static int CmdMouseDemo(int argc, char** argv)
+{
+    int seconds = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : 5;
+    if (seconds <= 0) {
+        seconds = 5;
+    }
+
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_MOUSE);
+    if (!h) {
+        std::printf("error: cannot create mouse (is VoidInput installed?)\n");
+        return 1;
+    }
+    std::printf("mouse created; tracing a circle for %d s\n", seconds);
+
+    const int hz    = 60;
+    const int ticks = seconds * hz;
+    for (int i = 0; i < ticks; ++i) {
+        double th = (double)i / hz * 3.14159265358979;   // ~0.5 revolution/sec
+        uint16_t x = (uint16_t)(16384.0 + 6000.0 * std::cos(th));
+        uint16_t y = (uint16_t)(16384.0 + 6000.0 * std::sin(th));
+        VoidrvInputMouseMoveAbsolute(h, x, y, 0, 0, 0);
+        Sleep(1000 / hz);
+    }
+    VoidrvInputClose(h);
+    std::printf("done\n");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
-    if (argc < 3 || std::strcmp(argv[1], "display") != 0) {
+    if (argc < 3) {
         return Usage();
     }
 
+    const char* group = argv[1];
     const char* cmd = argv[2];
     int    rest_argc = argc - 3;
     char** rest_argv = argv + 3;
+
+    if (std::strcmp(group, "mouse") == 0) {
+        if      (std::strcmp(cmd, "status")  == 0) return CmdMouseStatus();
+        else if (std::strcmp(cmd, "version") == 0) return CmdMouseVersion();
+        else if (std::strcmp(cmd, "move")    == 0) return CmdMouseMove(rest_argc, rest_argv);
+        else if (std::strcmp(cmd, "demo")    == 0) return CmdMouseDemo(rest_argc, rest_argv);
+        return Usage();
+    }
+
+    if (std::strcmp(group, "display") != 0) {
+        return Usage();
+    }
 
     int  rc       = 0;
     bool persists = false;   // does this command change saved state?

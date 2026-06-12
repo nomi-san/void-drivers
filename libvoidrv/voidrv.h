@@ -93,6 +93,55 @@ bool                VoidrvDisplayListModes(VoidrvDisplayHandle handle, VoidrvMod
    it). A host app can call this to decide whether to elevate. */
 bool                VoidrvDisplayPersistenceWritable(void);
 
+/* ===================== VoidInput ===================================== */
+
+/* Virtual input device types (mirrors the driver's type enum). */
+typedef enum VoidrvInputType {
+    VOIDRV_INPUT_MOUSE    = 1,  /* relative + absolute pointer */
+    VOIDRV_INPUT_KEYBOARD = 2,
+    VOIDRV_INPUT_XBOXONE  = 3,
+    VOIDRV_INPUT_DS4      = 4,
+    VOIDRV_INPUT_DS5      = 5,
+    VOIDRV_INPUT_TOUCH    = 6,
+} VoidrvInputType;
+
+/* Mouse button bitmask. */
+#define VOIDRV_MB_LEFT    0x01
+#define VOIDRV_MB_RIGHT   0x02
+#define VOIDRV_MB_MIDDLE  0x04
+#define VOIDRV_MB_X1      0x08
+#define VOIDRV_MB_X2      0x10
+
+/* Opaque per-device handle. Each handle owns exactly one virtual device; the
+   device exists until the handle is closed. */
+typedef struct VoidrvInput* VoidrvInputHandle;
+
+/* Is the VoidInput control interface present? */
+VoidrvStatus      VoidrvInputQueryStatus(void);
+
+/* Driver interface version, or 0 on failure. Opens and closes its own handle. */
+uint32_t          VoidrvInputVersion(void);
+
+/* Create a virtual input device of the given type. Returns NULL on failure
+   (GetLastError). Close the handle to remove the device. */
+VoidrvInputHandle VoidrvInputCreate(VoidrvInputType type);
+
+/* Remove the device and close its handle. */
+void              VoidrvInputClose(VoidrvInputHandle handle);
+
+/* Mouse - relative move. dx/dy are signed deltas; buttons is a VOIDRV_MB_*
+   bitmask; wheel/hwheel are signed detents. Requires a mouse handle. */
+bool              VoidrvInputMouseMoveRelative(VoidrvInputHandle handle,
+                                               int16_t dx, int16_t dy,
+                                               uint8_t buttons,
+                                               int8_t wheel, int8_t hwheel);
+
+/* Mouse - absolute position, normalized 0..32767 across the desktop. */
+bool              VoidrvInputMouseMoveAbsolute(VoidrvInputHandle handle,
+                                               uint16_t x, uint16_t y,
+                                               uint8_t buttons,
+                                               int8_t wheel, int8_t hwheel);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

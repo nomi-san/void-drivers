@@ -1,14 +1,27 @@
 #include "voidrv.h"
 
 #include <windows.h>
+#include <winioctl.h>
 #include <setupapi.h>
 #include <cfgmgr32.h>
 #include <new>
 #include <wchar.h>
 
-// Allocate GUID_DEVINTERFACE_VOIDDISPLAY and pull in the driver wire format.
+// Both control-interface headers are self-contained and each #include <winioctl.h>,
+// whose device-interface GUIDs are emitted on EVERY include (outside its include
+// guard). Pulling the headers here - before INITGUID - leaves all of those GUIDs as
+// plain extern declarations. We then allocate storage for ONLY the two interface
+// GUIDs we actually use. (Including either Public.h after INITGUID would re-emit
+// winioctl's GUIDs with initializers and allocate them twice -> C2374.) Both files
+// are named Public.h, so void-input is included by explicit relative path.
+#include "Public.h"                  // void-display control interface
+#include "../void-input/Public.h"    // void-input control interface
+
 #include <initguid.h>
-#include "Public.h"   // from ..\void-display (added to the include path)
+DEFINE_GUID(GUID_DEVINTERFACE_VOIDDISPLAY,
+    0x40255101, 0xa910, 0x441c, 0x84, 0xd6, 0x9f, 0x02, 0x71, 0x97, 0xfa, 0x70);
+DEFINE_GUID(GUID_DEVINTERFACE_VOIDINPUT,
+    0x7b0c8d49, 0x54fc, 0x45ca, 0xab, 0x47, 0x6a, 0x57, 0x2f, 0x2f, 0xf5, 0x10);
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
@@ -444,6 +457,112 @@ bool VoidrvDisplayListModes(VoidrvDisplayHandle handle, VoidrvModeList* list)
         list->Modes[i].RefreshHz = wire.Modes[i].RefreshHz;
     }
     return true;
+}
+
+// ===================== VoidInput =====================================
+
+// Mouse report ids - match the VoidInput mouse HID descriptor (void-input/Devices.cpp).
+#define VOIDRV_MOUSE_RID_RELATIVE 1
+#define VOIDRV_MOUSE_RID_ABSOLUTE 2
+
+struct VoidrvInput {
+    HANDLE          Device;
+    VoidrvInputType Type;
+};
+
+VoidrvStatus VoidrvInputQueryStatus(void)
+{
+    HANDLE h = OpenInterface(&GUID_DEVINTERFACE_VOIDINPUT);
+    if (h == INVALID_HANDLE_VALUE || h == nullptr) {
+        return VOIDRV_STATUS_NOT_INSTALLED;
+    }
+    CloseHandle(h);
+    return VOIDRV_STATUS_OK;
+}
+
+uint32_t VoidrvInputVersion(void)
+{
+    HANDLE h = OpenInterface(&GUID_DEVINTERFACE_VOIDINPUT);
+    if (h == INVALID_HANDLE_VALUE || h == nullptr) {
+        return 0;
+    }
+    ULONG version = 0;
+    bool ok = Control(h, IOCTL_VOIDINPUT_VERSION, nullptr, 0, &version, sizeof(version), nullptr);
+    CloseHandle(h);
+    return ok ? version : 0;
+}
+
+VoidrvInputHandle VoidrvInputCreate(VoidrvInputType type)
+{
+    HANDLE h = OpenInterface(&GUID_DEVINTERFACE_VOIDINPUT);
+    if (h == INVALID_HANDLE_VALUE || h == nullptr) {
+        return nullptr;
+    }
+
+    VOIDINPUT_CREATE req;
+    ZeroMemory(&req, sizeof(req));
+    req.Type = (UINT32)type;
+    if (!Control(h, IOCTL_VOIDINPUT_CREATE, &req, sizeof(req), nullptr, 0, nullptr)) {
+        CloseHandle(h);
+        return nullptr;
+    }
+
+    auto* d = new (std::nothrow) VoidrvInput();
+    if (!d) {
+        CloseHandle(h);   // also removes the device
+        return nullptr;
+    }
+    d->Device = h;
+    d->Type   = type;
+    return d;
+}
+
+void VoidrvInputClose(VoidrvInputHandle handle)
+{
+    if (!handle) {
+        return;
+    }
+    if (handle->Device && handle->Device != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle->Device);   // closing the handle removes the device
+    }
+    delete handle;
+}
+
+// Pack and submit one 8-byte mouse report (report-id + buttons + X + Y + wheels).
+// X/Y are little-endian 16-bit; the driver interprets them per the report id
+// (relative = signed delta, absolute = 0..32767).
+static bool MouseSubmit(VoidrvInputHandle handle, uint8_t reportId, uint8_t buttons,
+                        uint16_t x, uint16_t y, int8_t wheel, int8_t hwheel)
+{
+    if (!handle || handle->Type != VOIDRV_INPUT_MOUSE ||
+        handle->Device == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    uint8_t report[8];
+    report[0] = reportId;
+    report[1] = buttons;
+    report[2] = (uint8_t)(x & 0xFF);
+    report[3] = (uint8_t)(x >> 8);
+    report[4] = (uint8_t)(y & 0xFF);
+    report[5] = (uint8_t)(y >> 8);
+    report[6] = (uint8_t)wheel;
+    report[7] = (uint8_t)hwheel;
+
+    DWORD written = 0;
+    return WriteFile(handle->Device, report, sizeof(report), &written, nullptr) != FALSE;
+}
+
+bool VoidrvInputMouseMoveRelative(VoidrvInputHandle handle, int16_t dx, int16_t dy,
+                                  uint8_t buttons, int8_t wheel, int8_t hwheel)
+{
+    return MouseSubmit(handle, VOIDRV_MOUSE_RID_RELATIVE, buttons,
+                       (uint16_t)dx, (uint16_t)dy, wheel, hwheel);
+}
+
+bool VoidrvInputMouseMoveAbsolute(VoidrvInputHandle handle, uint16_t x, uint16_t y,
+                                  uint8_t buttons, int8_t wheel, int8_t hwheel)
+{
+    return MouseSubmit(handle, VOIDRV_MOUSE_RID_ABSOLUTE, buttons, x, y, wheel, hwheel);
 }
 
 } // extern "C"
