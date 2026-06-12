@@ -86,6 +86,13 @@ bool                VoidrvDisplayRemoveMode(VoidrvDisplayHandle handle, const Vo
 /* Read the full advertised mode list (defaults + custom). */
 bool                VoidrvDisplayListModes(VoidrvDisplayHandle handle, VoidrvModeList* list);
 
+/* Whether the SDK can persist changes so they survive an adapter restart / reboot.
+   Persistence writes HKLM and needs elevation. When this is false, Add/Remove/
+   SetMode/AddMode/RemoveMode still take effect for the current session but are NOT
+   saved (the driver reads the saved set at init; an unelevated caller cannot write
+   it). A host app can call this to decide whether to elevate. */
+bool                VoidrvDisplayPersistenceWritable(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

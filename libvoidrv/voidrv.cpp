@@ -411,6 +411,20 @@ bool VoidrvDisplayRemoveMode(VoidrvDisplayHandle handle, const VoidrvDisplayMode
     return true;
 }
 
+bool VoidrvDisplayPersistenceWritable(void)
+{
+    // Probe write access to the Parameters key without side effects: opening for
+    // KEY_SET_VALUE succeeds only when the caller is elevated (the persistence
+    // writes go to the same key).
+    HKEY hk = nullptr;
+    LSTATUS rs = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVoidParamsKey, 0, KEY_SET_VALUE, &hk);
+    if (rs == ERROR_SUCCESS) {
+        RegCloseKey(hk);
+        return true;
+    }
+    return false;
+}
+
 bool VoidrvDisplayListModes(VoidrvDisplayHandle handle, VoidrvModeList* list)
 {
     if (!handle || !list) {

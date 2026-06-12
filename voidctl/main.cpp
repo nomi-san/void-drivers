@@ -235,15 +235,27 @@ int main(int argc, char** argv)
     int    rest_argc = argc - 3;
     char** rest_argv = argv + 3;
 
-    if (std::strcmp(cmd, "status") == 0)     return CmdStatus();
-    if (std::strcmp(cmd, "version") == 0)    return CmdVersion();
-    if (std::strcmp(cmd, "list") == 0)       return CmdList();
-    if (std::strcmp(cmd, "add") == 0)        return CmdAdd(rest_argc, rest_argv);
-    if (std::strcmp(cmd, "remove") == 0)     return CmdRemove(rest_argc, rest_argv);
-    if (std::strcmp(cmd, "setmode") == 0)    return CmdSetMode(rest_argc, rest_argv);
-    if (std::strcmp(cmd, "modes") == 0)      return CmdModes();
-    if (std::strcmp(cmd, "addmode") == 0)    return CmdAddRemoveMode(rest_argc, rest_argv, true);
-    if (std::strcmp(cmd, "removemode") == 0) return CmdAddRemoveMode(rest_argc, rest_argv, false);
+    int  rc       = 0;
+    bool persists = false;   // does this command change saved state?
 
-    return Usage();
+    if (std::strcmp(cmd, "status") == 0)          rc = CmdStatus();
+    else if (std::strcmp(cmd, "version") == 0)    rc = CmdVersion();
+    else if (std::strcmp(cmd, "list") == 0)       rc = CmdList();
+    else if (std::strcmp(cmd, "add") == 0)        { rc = CmdAdd(rest_argc, rest_argv); persists = true; }
+    else if (std::strcmp(cmd, "remove") == 0)     { rc = CmdRemove(rest_argc, rest_argv); persists = true; }
+    else if (std::strcmp(cmd, "setmode") == 0)    { rc = CmdSetMode(rest_argc, rest_argv); persists = true; }
+    else if (std::strcmp(cmd, "modes") == 0)      rc = CmdModes();
+    else if (std::strcmp(cmd, "addmode") == 0)    { rc = CmdAddRemoveMode(rest_argc, rest_argv, true); persists = true; }
+    else if (std::strcmp(cmd, "removemode") == 0) { rc = CmdAddRemoveMode(rest_argc, rest_argv, false); persists = true; }
+    else return Usage();
+
+    // The live operation went through the driver, but saving it for restore-on-start
+    // writes HKLM and needs elevation. Warn so a "successful" change that silently
+    // won't survive a restart is not a surprise.
+    if (rc == 0 && persists && !VoidrvDisplayPersistenceWritable()) {
+        std::printf(
+            "  warning: not elevated - this change is live but will NOT survive an adapter\n"
+            "           restart or reboot. Run voidctl as administrator to persist it.\n");
+    }
+    return rc;
 }

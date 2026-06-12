@@ -207,7 +207,10 @@ reboot:
   device hardware key and the service `Parameters` key return access-denied), so the
   driver cannot self-persist. `libvoidrv` instead mirrors each `Add`/`Remove`/
   `SetMode` into `PersistedDisplays` (best-effort, needs elevation) - the same
-  split used for custom modes (section 3).
+  split used for custom modes (section 3). Because the write is best-effort, an
+  unelevated caller's change is live but not saved; the SDK exposes
+  `VoidrvDisplayPersistenceWritable()` to detect this and `voidctl` warns when a
+  persisting command runs unelevated.
 - On adapter init-finished, after the custom modes are loaded and before any control
   IOCTL is served, the driver reads `PersistedDisplays` (if `RestoreOnStart`) and
   recreates each display at its stored slot and mode. Monitor identities are stable
