@@ -4,6 +4,7 @@
 #include <setupapi.h>
 #include <cfgmgr32.h>
 #include <new>
+#include <wchar.h>
 
 // Allocate GUID_DEVINTERFACE_VOIDDISPLAY and pull in the driver wire format.
 #include <initguid.h>
@@ -11,6 +12,7 @@
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
+#pragma comment(lib, "user32.lib")
 
 struct VoidrvDisplay {
     HANDLE Device;
@@ -124,6 +126,8 @@ uint32_t VoidrvDisplayVersion(VoidrvDisplayHandle handle)
     return version;
 }
 
+static bool VoidApplyMode(uint32_t index, const VoidrvDisplayMode* mode);
+
 int VoidrvDisplayAdd(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
 {
     if (!handle) {
@@ -141,6 +145,18 @@ int VoidrvDisplayAdd(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
                  &index, sizeof(index), nullptr)) {
         return -1;
     }
+
+    // If the display auto-activates, force the requested mode over whatever the OS
+    // remembered for this monitor identity. Best-effort: poll briefly for it to go
+    // active (it does nothing if the display stays inactive).
+    if (mode && mode->Width && mode->Height && mode->RefreshHz) {
+        for (int tries = 0; tries < 10; ++tries) {
+            if (VoidApplyMode((uint32_t)index, mode)) {
+                break;
+            }
+            Sleep(150);
+        }
+    }
     return (int)index;
 }
 
@@ -153,18 +169,69 @@ bool VoidrvDisplayRemove(VoidrvDisplayHandle handle, uint32_t index)
     return Control(handle->Device, IOCTL_VOIDDISPLAY_REMOVE, &i, sizeof(i), nullptr, 0, nullptr);
 }
 
+// Apply a mode to the index-th active VoidDisplay monitor via the GDI display
+// config. Windows remembers the per-monitor mode in the registry, so the driver's
+// advertised mode is not enough on a re-add - we force the requested mode here.
+// Identifies VoidDisplay GDI devices by the "VVD" EDID id on their monitor child.
+// (Index is matched against active VoidDisplay devices in enumeration order; exact
+//  for the common single-display case.)
+static bool VoidApplyMode(uint32_t index, const VoidrvDisplayMode* mode)
+{
+    WCHAR devices[VOIDRV_MAX_DISPLAYS][32];
+    int count = 0;
+
+    DISPLAY_DEVICEW dd;
+    ZeroMemory(&dd, sizeof(dd));
+    dd.cb = sizeof(dd);
+    for (DWORD i = 0; count < VOIDRV_MAX_DISPLAYS && EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
+        if (dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
+            DISPLAY_DEVICEW mon;
+            ZeroMemory(&mon, sizeof(mon));
+            mon.cb = sizeof(mon);
+            if (EnumDisplayDevicesW(dd.DeviceName, 0, &mon, 0) && wcsstr(mon.DeviceID, L"VVD")) {
+                lstrcpynW(devices[count], dd.DeviceName, 32);
+                ++count;
+            }
+        }
+        ZeroMemory(&dd, sizeof(dd));
+        dd.cb = sizeof(dd);
+    }
+
+    if (index >= (uint32_t)count) {
+        return false;  // that VoidDisplay isn't active (no GDI device to drive)
+    }
+
+    DEVMODEW dm;
+    ZeroMemory(&dm, sizeof(dm));
+    dm.dmSize = sizeof(dm);
+    if (!EnumDisplaySettingsW(devices[index], ENUM_CURRENT_SETTINGS, &dm)) {
+        return false;
+    }
+    dm.dmPelsWidth        = mode->Width;
+    dm.dmPelsHeight       = mode->Height;
+    dm.dmDisplayFrequency = mode->RefreshHz;
+    dm.dmFields           = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+
+    LONG rc = ChangeDisplaySettingsExW(devices[index], &dm, nullptr, CDS_UPDATEREGISTRY, nullptr);
+    return rc == DISP_CHANGE_SUCCESSFUL;
+}
+
 bool VoidrvDisplaySetMode(VoidrvDisplayHandle handle, uint32_t index, const VoidrvDisplayMode* mode)
 {
     if (!handle || !mode) {
         return false;
     }
+    // Update the driver's stored mode (keeps LIST accurate)...
     VOIDDISPLAY_SET_MODE wire;
     ZeroMemory(&wire, sizeof(wire));
     wire.Index = index;
     wire.Mode.Width = mode->Width;
     wire.Mode.Height = mode->Height;
     wire.Mode.RefreshHz = mode->RefreshHz;
-    return Control(handle->Device, IOCTL_VOIDDISPLAY_SET_MODE, &wire, sizeof(wire), nullptr, 0, nullptr);
+    Control(handle->Device, IOCTL_VOIDDISPLAY_SET_MODE, &wire, sizeof(wire), nullptr, 0, nullptr);
+
+    // ...then apply the actual OS-level resolution change.
+    return VoidApplyMode(index, mode);
 }
 
 bool VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state)
