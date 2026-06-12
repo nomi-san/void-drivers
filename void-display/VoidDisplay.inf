@@ -1,0 +1,73 @@
+;
+; VoidDisplay.inf - Void Virtual Display Adapter (IddCx UMDF)
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Display
+ClassGuid   = {4d36e968-e325-11ce-bfc1-08002be10318}
+ClassVer    = 2.0
+Provider    = %ManufacturerName%
+CatalogFile = VoidDisplay.cat
+PnpLockdown = 1
+DriverVer   = ; stamped by the build (stampinf)
+
+[Manufacturer]
+%ManufacturerName% = Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceName% = VoidDisplay_Install, Root\Void\Display
+
+[SourceDisksFiles]
+VoidDisplay.dll = 1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+; =================== UMDF Device ==================================
+
+[VoidDisplay_Install.NT]
+CopyFiles = UMDriverCopy
+
+[VoidDisplay_Install.NT.hw]
+AddReg = VoidDisplay_HardwareDeviceSettings
+
+[VoidDisplay_HardwareDeviceSettings]
+HKR,, "UpperFilters", 0x00010000, "IndirectKmd"
+HKR, "WUDF", "DeviceGroupId", 0x00000000, "VoidDisplayGroup"
+HKR,, "Security",, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)"
+
+[VoidDisplay_Install.NT.Services]
+AddService = WUDFRd,0x000001fa,WUDFRD_ServiceInstall
+
+[VoidDisplay_Install.NT.Wdf]
+UmdfService              = VoidDisplay,VoidDisplay_Install_Section
+UmdfServiceOrder         = VoidDisplay
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+UmdfHostProcessSharing   = ProcessSharingDisabled
+
+[VoidDisplay_Install_Section]
+UmdfLibraryVersion = 2.25.0
+ServiceBinary      = %12%\UMDF\VoidDisplay.dll
+UmdfExtensions     = IddCx0102
+
+[WUDFRD_ServiceInstall]
+DisplayName   = %WudfRdDisplayName%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %12%\WUDFRd.sys
+
+[DestinationDirs]
+UMDriverCopy = 12,UMDF
+
+[UMDriverCopy]
+VoidDisplay.dll
+
+; =================== Strings ==================================
+
+[Strings]
+ManufacturerName   = "Void Virtual Driver"
+DiskName           = "VoidDisplay Installation Disk"
+WudfRdDisplayName  = "Windows Driver Foundation - User-mode Driver Framework Reflector"
+DeviceName         = "Void Virtual Display Adapter"
