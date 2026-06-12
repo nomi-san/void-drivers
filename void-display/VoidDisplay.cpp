@@ -63,21 +63,30 @@ static bool VoidResolveRenderAdapterLuid(LUID* outLuid)
     }
 
     ComPtr<IDXGIAdapter1> adapter;
+    bool found = false;
     for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
         DXGI_ADAPTER_DESC1 desc = {};
-        if (SUCCEEDED(adapter->GetDesc1(&desc)) &&
-            desc.VendorId == vendorId &&
-            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
-            *outLuid = desc.AdapterLuid;
-            VOID_LOG("Preferred render adapter: vendor 0x%04X -> LUID %ld:%lu",
-                     vendorId, desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
-            return true;
+        if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+            bool software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+            VOID_LOG("DXGI adapter %u: \"%S\" vendor=0x%04X device=0x%04X LUID=%ld:%lu%s",
+                     i, desc.Description, desc.VendorId, desc.DeviceId,
+                     desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart,
+                     software ? " [software]" : "");
+            if (!found && desc.VendorId == vendorId && !software) {
+                *outLuid = desc.AdapterLuid;
+                found = true;
+                VOID_LOG("Preferred render adapter: \"%S\" vendor 0x%04X -> LUID %ld:%lu",
+                         desc.Description, vendorId,
+                         desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
+            }
         }
         adapter.Reset();
     }
 
-    VOID_LOG("No DXGI adapter for preferred vendor 0x%04X; using auto", vendorId);
-    return false;
+    if (!found) {
+        VOID_LOG("No DXGI adapter for preferred vendor 0x%04X; using auto", vendorId);
+    }
+    return found;
 }
 
 // ---------------------------------------------------------------------------
