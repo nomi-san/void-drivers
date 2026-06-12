@@ -189,4 +189,51 @@ bool VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state)
     return true;
 }
 
+bool VoidrvDisplayAddMode(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
+{
+    if (!handle || !mode) {
+        return false;
+    }
+    VOIDDISPLAY_MODE wire;
+    ZeroMemory(&wire, sizeof(wire));
+    wire.Width = mode->Width;
+    wire.Height = mode->Height;
+    wire.RefreshHz = mode->RefreshHz;
+    return Control(handle->Device, IOCTL_VOIDDISPLAY_ADD_MODE, &wire, sizeof(wire), nullptr, 0, nullptr);
+}
+
+bool VoidrvDisplayRemoveMode(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
+{
+    if (!handle || !mode) {
+        return false;
+    }
+    VOIDDISPLAY_MODE wire;
+    ZeroMemory(&wire, sizeof(wire));
+    wire.Width = mode->Width;
+    wire.Height = mode->Height;
+    wire.RefreshHz = mode->RefreshHz;
+    return Control(handle->Device, IOCTL_VOIDDISPLAY_REMOVE_MODE, &wire, sizeof(wire), nullptr, 0, nullptr);
+}
+
+bool VoidrvDisplayListModes(VoidrvDisplayHandle handle, VoidrvModeList* list)
+{
+    if (!handle || !list) {
+        return false;
+    }
+    VOIDDISPLAY_MODE_LIST wire;
+    ZeroMemory(&wire, sizeof(wire));
+    if (!Control(handle->Device, IOCTL_VOIDDISPLAY_LIST_MODES, nullptr, 0,
+                 &wire, sizeof(wire), nullptr)) {
+        return false;
+    }
+
+    list->Count = wire.Count;
+    for (uint32_t i = 0; i < VOIDRV_MAX_MODES && i < VOIDDISPLAY_MAX_MODES; ++i) {
+        list->Modes[i].Width = wire.Modes[i].Width;
+        list->Modes[i].Height = wire.Modes[i].Height;
+        list->Modes[i].RefreshHz = wire.Modes[i].RefreshHz;
+    }
+    return true;
+}
+
 } // extern "C"

@@ -63,3 +63,94 @@ unsigned VoidFindModeIndex(UINT32 width, UINT32 height, UINT32 vsync)
     }
     return 0;
 }
+
+// --- Runtime advertised-mode store ---------------------------------------
+
+#define VOID_MAX_CUSTOM_MODES (VOIDDISPLAY_MAX_MODES - 16)  // leave room for defaults
+
+static SRWLOCK       s_modeLock = SRWLOCK_INIT;
+static VOID_MODE_DESC s_customModes[VOID_MAX_CUSTOM_MODES];
+static unsigned      s_customCount = 0;
+
+static bool SameMode(const VOID_MODE_DESC& a, UINT32 w, UINT32 h, UINT32 hz)
+{
+    return a.Width == w && a.Height == h && a.RefreshHz == hz;
+}
+
+static bool IsDefaultMode(UINT32 w, UINT32 h, UINT32 hz)
+{
+    for (unsigned i = 0; i < g_VoidDefaultModeCount; ++i) {
+        if (SameMode(g_VoidDefaultModes[i], w, h, hz)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool VoidModesAdd(UINT32 width, UINT32 height, UINT32 hz)
+{
+    if (width == 0 || height == 0 || hz == 0) {
+        return false;
+    }
+    if (IsDefaultMode(width, height, hz)) {
+        return true;  // already advertised
+    }
+
+    bool ok = false;
+    AcquireSRWLockExclusive(&s_modeLock);
+    bool dup = false;
+    for (unsigned i = 0; i < s_customCount; ++i) {
+        if (SameMode(s_customModes[i], width, height, hz)) { dup = true; break; }
+    }
+    if (dup) {
+        ok = true;
+    } else if (s_customCount < VOID_MAX_CUSTOM_MODES) {
+        s_customModes[s_customCount].Width = width;
+        s_customModes[s_customCount].Height = height;
+        s_customModes[s_customCount].RefreshHz = hz;
+        s_customCount++;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&s_modeLock);
+    return ok;
+}
+
+bool VoidModesRemove(UINT32 width, UINT32 height, UINT32 hz)
+{
+    bool removed = false;
+    AcquireSRWLockExclusive(&s_modeLock);
+    for (unsigned i = 0; i < s_customCount; ++i) {
+        if (SameMode(s_customModes[i], width, height, hz)) {
+            for (unsigned j = i + 1; j < s_customCount; ++j) {
+                s_customModes[j - 1] = s_customModes[j];
+            }
+            s_customCount--;
+            removed = true;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&s_modeLock);
+    return removed;
+}
+
+unsigned VoidModesGet(VOID_MODE_DESC* out, unsigned cap)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < g_VoidDefaultModeCount && n < cap; ++i) {
+        out[n++] = g_VoidDefaultModes[i];
+    }
+    AcquireSRWLockShared(&s_modeLock);
+    for (unsigned i = 0; i < s_customCount && n < cap; ++i) {
+        out[n++] = s_customModes[i];
+    }
+    ReleaseSRWLockShared(&s_modeLock);
+    return n;
+}
+
+unsigned VoidModesCount(void)
+{
+    AcquireSRWLockShared(&s_modeLock);
+    unsigned n = g_VoidDefaultModeCount + s_customCount;
+    ReleaseSRWLockShared(&s_modeLock);
+    return n;
+}

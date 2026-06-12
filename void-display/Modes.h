@@ -8,6 +8,7 @@
 #pragma once
 
 #include <windows.h>
+#include "Public.h"   // VOIDDISPLAY_MAX_MODES and the wire structs
 
 typedef struct _VOID_MODE_DESC {
     UINT32 Width;
@@ -36,3 +37,24 @@ DISPLAYCONFIG_VIDEO_SIGNAL_INFO VoidCreateSignalInfo(UINT32 width, UINT32 height
 
 /* Index of (w, h, vsync) within g_VoidDefaultModes, or 0 if not present. */
 unsigned VoidFindModeIndex(UINT32 width, UINT32 height, UINT32 vsync);
+
+/*
+ * Runtime advertised-mode store: the built-in defaults plus user-added custom
+ * modes (managed via the control IOCTLs). Thread-safe; the IddCx mode callbacks
+ * read it on arbitrary threads.
+ */
+
+/* Add a custom mode. No-op-success if it is already advertised. Returns false
+ * only on bad input or when the custom-mode store is full. */
+bool VoidModesAdd(UINT32 width, UINT32 height, UINT32 hz);
+
+/* Remove a custom mode. Built-in defaults cannot be removed. Returns true if a
+ * custom mode was removed. */
+bool VoidModesRemove(UINT32 width, UINT32 height, UINT32 hz);
+
+/* Copy the full advertised list (defaults first, then custom) into out (up to
+ * cap entries). Returns the number written. */
+unsigned VoidModesGet(VOID_MODE_DESC* out, unsigned cap);
+
+/* Total advertised mode count (defaults + custom). */
+unsigned VoidModesCount(void);

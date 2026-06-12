@@ -238,6 +238,24 @@ VOID VoidDisplayIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request,
         if (NT_SUCCESS(status)) { dev->GetState(out); info = sizeof(VOIDDISPLAY_STATE); }
         break;
     }
+    case IOCTL_VOIDDISPLAY_ADD_MODE: {
+        VOIDDISPLAY_MODE* in = nullptr;
+        status = WdfRequestRetrieveInputBuffer(Request, sizeof(VOIDDISPLAY_MODE), (PVOID*)&in, nullptr);
+        if (NT_SUCCESS(status)) { status = dev->AddMode(*in); }
+        break;
+    }
+    case IOCTL_VOIDDISPLAY_REMOVE_MODE: {
+        VOIDDISPLAY_MODE* in = nullptr;
+        status = WdfRequestRetrieveInputBuffer(Request, sizeof(VOIDDISPLAY_MODE), (PVOID*)&in, nullptr);
+        if (NT_SUCCESS(status)) { status = dev->RemoveMode(*in); }
+        break;
+    }
+    case IOCTL_VOIDDISPLAY_LIST_MODES: {
+        VOIDDISPLAY_MODE_LIST* out = nullptr;
+        status = WdfRequestRetrieveOutputBuffer(Request, sizeof(VOIDDISPLAY_MODE_LIST), (PVOID*)&out, nullptr);
+        if (NT_SUCCESS(status)) { dev->GetModes(out); info = sizeof(VOIDDISPLAY_MODE_LIST); }
+        break;
+    }
     default:
         break;
     }
@@ -273,15 +291,18 @@ _Use_decl_annotations_
 NTSTATUS VoidDisplayParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTION* pInArgs,
                                             IDARG_OUT_PARSEMONITORDESCRIPTION* pOutArgs)
 {
-    pOutArgs->MonitorModeBufferOutputCount = g_VoidDefaultModeCount;
+    VOID_MODE_DESC modes[VOIDDISPLAY_MAX_MODES];
+    unsigned count = VoidModesGet(modes, VOIDDISPLAY_MAX_MODES);
+
+    pOutArgs->MonitorModeBufferOutputCount = count;
     if (pInArgs->MonitorModeBufferInputCount == 0) {
         return STATUS_SUCCESS;  // size query
     }
-    if (pInArgs->MonitorModeBufferInputCount < g_VoidDefaultModeCount) {
+    if (pInArgs->MonitorModeBufferInputCount < count) {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    for (unsigned i = 0; i < g_VoidDefaultModeCount; ++i) {
-        FillMonitorMode(pInArgs->pMonitorModes[i], g_VoidDefaultModes[i]);
+    for (unsigned i = 0; i < count; ++i) {
+        FillMonitorMode(pInArgs->pMonitorModes[i], modes[i]);
     }
     pOutArgs->PreferredMonitorModeIdx = 0;
     return STATUS_SUCCESS;
@@ -293,15 +314,18 @@ NTSTATUS VoidDisplayMonitorGetDefaultModes(IDDCX_MONITOR MonitorObject,
                                            IDARG_OUT_GETDEFAULTDESCRIPTIONMODES* pOutArgs)
 {
     UNREFERENCED_PARAMETER(MonitorObject);
-    pOutArgs->DefaultMonitorModeBufferOutputCount = g_VoidDefaultModeCount;
+    VOID_MODE_DESC modes[VOIDDISPLAY_MAX_MODES];
+    unsigned count = VoidModesGet(modes, VOIDDISPLAY_MAX_MODES);
+
+    pOutArgs->DefaultMonitorModeBufferOutputCount = count;
     if (pInArgs->DefaultMonitorModeBufferInputCount == 0) {
         return STATUS_SUCCESS;
     }
-    if (pInArgs->DefaultMonitorModeBufferInputCount < g_VoidDefaultModeCount) {
+    if (pInArgs->DefaultMonitorModeBufferInputCount < count) {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    for (unsigned i = 0; i < g_VoidDefaultModeCount; ++i) {
-        FillMonitorMode(pInArgs->pDefaultMonitorModes[i], g_VoidDefaultModes[i]);
+    for (unsigned i = 0; i < count; ++i) {
+        FillMonitorMode(pInArgs->pDefaultMonitorModes[i], modes[i]);
     }
     pOutArgs->PreferredMonitorModeIdx = 0;
     return STATUS_SUCCESS;
@@ -313,15 +337,18 @@ NTSTATUS VoidDisplayMonitorQueryModes(IDDCX_MONITOR MonitorObject,
                                       IDARG_OUT_QUERYTARGETMODES* pOutArgs)
 {
     UNREFERENCED_PARAMETER(MonitorObject);
-    pOutArgs->TargetModeBufferOutputCount = g_VoidDefaultModeCount;
+    VOID_MODE_DESC modes[VOIDDISPLAY_MAX_MODES];
+    unsigned count = VoidModesGet(modes, VOIDDISPLAY_MAX_MODES);
+
+    pOutArgs->TargetModeBufferOutputCount = count;
     if (pInArgs->TargetModeBufferInputCount == 0) {
         return STATUS_SUCCESS;
     }
-    if (pInArgs->TargetModeBufferInputCount < g_VoidDefaultModeCount) {
+    if (pInArgs->TargetModeBufferInputCount < count) {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    for (unsigned i = 0; i < g_VoidDefaultModeCount; ++i) {
-        FillTargetMode(pInArgs->pTargetModes[i], g_VoidDefaultModes[i]);
+    for (unsigned i = 0; i < count; ++i) {
+        FillTargetMode(pInArgs->pTargetModes[i], modes[i]);
     }
     return STATUS_SUCCESS;
 }
@@ -592,6 +619,54 @@ void VoidDisplayDevice::GetState(VOIDDISPLAY_STATE* out)
         }
     }
     WdfWaitLockRelease(m_Lock);
+}
+
+void VoidDisplayDevice::ReplugAllMonitors()
+{
+    // The advertised mode list changed; re-arrive each live monitor so the OS
+    // re-queries ParseMonitorDescription / QueryTargetModes and picks up the
+    // new modes. Brief disconnect per monitor is acceptable for a config op.
+    WdfWaitLockAcquire(m_Lock, NULL);
+    for (UINT32 i = 0; i < VOIDDISPLAY_MAX_DISPLAYS; ++i) {
+        if (m_Slots[i].InUse) {
+            VOIDDISPLAY_MODE mode = m_Slots[i].Mode;
+            DestroyMonitorLocked(i);
+            CreateMonitorLocked(i, mode);
+        }
+    }
+    WdfWaitLockRelease(m_Lock);
+}
+
+NTSTATUS VoidDisplayDevice::AddMode(const VOIDDISPLAY_MODE& mode)
+{
+    if (!VoidModesAdd(mode.Width, mode.Height, mode.RefreshHz)) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    ReplugAllMonitors();
+    VOID_LOG("Added custom mode %ux%u@%u", mode.Width, mode.Height, mode.RefreshHz);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS VoidDisplayDevice::RemoveMode(const VOIDDISPLAY_MODE& mode)
+{
+    if (!VoidModesRemove(mode.Width, mode.Height, mode.RefreshHz)) {
+        return STATUS_NOT_FOUND;  // not a custom mode (defaults cannot be removed)
+    }
+    ReplugAllMonitors();
+    VOID_LOG("Removed custom mode %ux%u@%u", mode.Width, mode.Height, mode.RefreshHz);
+    return STATUS_SUCCESS;
+}
+
+void VoidDisplayDevice::GetModes(VOIDDISPLAY_MODE_LIST* out)
+{
+    VOID_MODE_DESC modes[VOIDDISPLAY_MAX_MODES];
+    unsigned count = VoidModesGet(modes, VOIDDISPLAY_MAX_MODES);
+    out->Count = count;
+    for (unsigned i = 0; i < count && i < VOIDDISPLAY_MAX_MODES; ++i) {
+        out->Modes[i].Width = modes[i].Width;
+        out->Modes[i].Height = modes[i].Height;
+        out->Modes[i].RefreshHz = modes[i].RefreshHz;
+    }
 }
 
 void VoidDisplayDevice::AssignSwapChain(UINT32 index, IDDCX_SWAPCHAIN swapChain,

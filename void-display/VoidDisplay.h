@@ -99,6 +99,10 @@ public:
     NTSTATUS SetMode(UINT32 index, const VOIDDISPLAY_MODE& mode);
     void     GetState(VOIDDISPLAY_STATE* out);
 
+    NTSTATUS AddMode(const VOIDDISPLAY_MODE& mode);
+    NTSTATUS RemoveMode(const VOIDDISPLAY_MODE& mode);
+    void     GetModes(VOIDDISPLAY_MODE_LIST* out);
+
     void AssignSwapChain(UINT32 index, IDDCX_SWAPCHAIN swapChain,
                          LUID renderAdapter, HANDLE newFrameEvent);
     void UnassignSwapChain(UINT32 index);
@@ -109,6 +113,7 @@ public:
 private:
     NTSTATUS CreateMonitorLocked(UINT32 index, const VOIDDISPLAY_MODE& mode);
     void     DestroyMonitorLocked(UINT32 index);
+    void     ReplugAllMonitors();   // re-arrive live monitors after a mode-list change
 
     WDFDEVICE       m_WdfDevice;
     IDDCX_ADAPTER   m_Adapter;

@@ -74,6 +74,15 @@ Private interface GUID `{40255101-a910-441c-84d6-9f027197fa70}`. All codes use
 
 // List current displays. Out: VOIDDISPLAY_STATE.
 #define IOCTL_VOIDDISPLAY_LIST      VOIDDISPLAY_IOCTL(5, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+// Add a custom mode to the advertised list. In: VOIDDISPLAY_MODE.
+#define IOCTL_VOIDDISPLAY_ADD_MODE    VOIDDISPLAY_IOCTL(6, FILE_WRITE_ACCESS)
+
+// Remove a custom mode (defaults cannot be removed). In: VOIDDISPLAY_MODE.
+#define IOCTL_VOIDDISPLAY_REMOVE_MODE VOIDDISPLAY_IOCTL(7, FILE_WRITE_ACCESS)
+
+// List advertised modes (defaults + custom). Out: VOIDDISPLAY_MODE_LIST.
+#define IOCTL_VOIDDISPLAY_LIST_MODES  VOIDDISPLAY_IOCTL(8, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
 ```
 
 ```c
@@ -111,6 +120,14 @@ Semantics:
   slot.
 - `SET_MODE` updates the active mode of an existing display and re-advertises it.
 - `LIST` returns the current table.
+- `ADD_MODE` / `REMOVE_MODE` add or remove a custom resolution+refresh from the
+  advertised mode list (built-in defaults always remain). After a change, live
+  monitors are re-arrived so the OS re-queries and the new mode appears in display
+  settings. `LIST_MODES` returns the full advertised list (defaults + custom).
+- The advertised list is a process-global store (the `ParseMonitorDescription`
+  callback has no per-monitor context), so custom modes apply to every VoidDisplay
+  monitor. They are in-memory for now; durable registry persistence (written by the
+  admin-side SDK, read by the driver at init) is a follow-up.
 - No `UPDATE`/ping code exists, by design.
 
 ## 4. Default mode set

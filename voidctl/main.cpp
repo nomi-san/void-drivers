@@ -26,7 +26,10 @@ static int Usage()
         "  voidctl display list\n"
         "  voidctl display add [WxH@Hz]      (e.g. add 1920x1080@60; omit for default)\n"
         "  voidctl display remove <index>\n"
-        "  voidctl display setmode <index> <WxH@Hz>\n");
+        "  voidctl display setmode <index> <WxH@Hz>\n"
+        "  voidctl display modes             (list advertised modes)\n"
+        "  voidctl display addmode <WxH@Hz>\n"
+        "  voidctl display removemode <WxH@Hz>\n");
     return 1;
 }
 
@@ -163,6 +166,52 @@ static int CmdSetMode(int argc, char** argv)
     return ok ? 0 : 1;
 }
 
+static int CmdModes()
+{
+    VoidrvDisplayHandle h = VoidrvDisplayOpen();
+    if (!h) {
+        std::printf("error: cannot open VoidDisplay\n");
+        return 1;
+    }
+    VoidrvModeList list;
+    std::memset(&list, 0, sizeof(list));
+    if (!VoidrvDisplayListModes(h, &list)) {
+        std::printf("error: list modes failed\n");
+        VoidrvDisplayClose(h);
+        return 1;
+    }
+    std::printf("advertised modes: %u\n", list.Count);
+    for (uint32_t i = 0; i < list.Count && i < VOIDRV_MAX_MODES; ++i) {
+        std::printf("  %ux%u@%u\n", list.Modes[i].Width, list.Modes[i].Height, list.Modes[i].RefreshHz);
+    }
+    VoidrvDisplayClose(h);
+    return 0;
+}
+
+static int CmdAddRemoveMode(int argc, char** argv, bool add)
+{
+    if (argc < 1) {
+        std::printf("error: %smode needs <WxH@Hz>\n", add ? "add" : "remove");
+        return 1;
+    }
+    VoidrvDisplayMode mode;
+    std::memset(&mode, 0, sizeof(mode));
+    if (!ParseMode(argv[0], &mode)) {
+        std::printf("error: bad mode '%s'\n", argv[0]);
+        return 1;
+    }
+    VoidrvDisplayHandle h = VoidrvDisplayOpen();
+    if (!h) {
+        std::printf("error: cannot open VoidDisplay\n");
+        return 1;
+    }
+    bool ok = add ? VoidrvDisplayAddMode(h, &mode) : VoidrvDisplayRemoveMode(h, &mode);
+    std::printf("%s mode %ux%u@%u: %s\n", add ? "add" : "remove",
+                mode.Width, mode.Height, mode.RefreshHz, ok ? "ok" : "failed");
+    VoidrvDisplayClose(h);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3 || std::strcmp(argv[1], "display") != 0) {
@@ -173,12 +222,15 @@ int main(int argc, char** argv)
     int    rest_argc = argc - 3;
     char** rest_argv = argv + 3;
 
-    if (std::strcmp(cmd, "status") == 0)  return CmdStatus();
-    if (std::strcmp(cmd, "version") == 0) return CmdVersion();
-    if (std::strcmp(cmd, "list") == 0)    return CmdList();
-    if (std::strcmp(cmd, "add") == 0)     return CmdAdd(rest_argc, rest_argv);
-    if (std::strcmp(cmd, "remove") == 0)  return CmdRemove(rest_argc, rest_argv);
-    if (std::strcmp(cmd, "setmode") == 0) return CmdSetMode(rest_argc, rest_argv);
+    if (std::strcmp(cmd, "status") == 0)     return CmdStatus();
+    if (std::strcmp(cmd, "version") == 0)    return CmdVersion();
+    if (std::strcmp(cmd, "list") == 0)       return CmdList();
+    if (std::strcmp(cmd, "add") == 0)        return CmdAdd(rest_argc, rest_argv);
+    if (std::strcmp(cmd, "remove") == 0)     return CmdRemove(rest_argc, rest_argv);
+    if (std::strcmp(cmd, "setmode") == 0)    return CmdSetMode(rest_argc, rest_argv);
+    if (std::strcmp(cmd, "modes") == 0)      return CmdModes();
+    if (std::strcmp(cmd, "addmode") == 0)    return CmdAddRemoveMode(rest_argc, rest_argv, true);
+    if (std::strcmp(cmd, "removemode") == 0) return CmdAddRemoveMode(rest_argc, rest_argv, false);
 
     return Usage();
 }

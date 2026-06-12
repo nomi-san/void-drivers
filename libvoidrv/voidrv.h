@@ -20,12 +20,18 @@ extern "C" {
 #endif
 
 #define VOIDRV_MAX_DISPLAYS 8
+#define VOIDRV_MAX_MODES    64
 
 typedef struct VoidrvDisplayMode {
     uint32_t Width;      /* pixels; 0 in an Add request selects the driver default */
     uint32_t Height;     /* pixels */
     uint32_t RefreshHz;  /* nominal refresh, e.g. 60, 120, 144, 240 */
 } VoidrvDisplayMode;
+
+typedef struct VoidrvModeList {
+    uint32_t          Count;
+    VoidrvDisplayMode Modes[VOIDRV_MAX_MODES];
+} VoidrvModeList;
 
 typedef struct VoidrvDisplayEntry {
     uint32_t          InUse;
@@ -69,6 +75,16 @@ bool                VoidrvDisplaySetMode(VoidrvDisplayHandle handle, uint32_t in
 
 /* Read the current display table. */
 bool                VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state);
+
+/* Add a custom mode to the advertised list (visible in Windows display settings).
+   Built-in default modes are always advertised. Live displays re-plug to pick it up. */
+bool                VoidrvDisplayAddMode(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode);
+
+/* Remove a previously added custom mode (defaults cannot be removed). */
+bool                VoidrvDisplayRemoveMode(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode);
+
+/* Read the full advertised mode list (defaults + custom). */
+bool                VoidrvDisplayListModes(VoidrvDisplayHandle handle, VoidrvModeList* list);
 
 #ifdef __cplusplus
 } /* extern "C" */

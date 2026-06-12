@@ -18,6 +18,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_VOIDDISPLAY,
 
 #define VOIDDISPLAY_VERSION       1
 #define VOIDDISPLAY_MAX_DISPLAYS  8
+#define VOIDDISPLAY_MAX_MODES     64
 
 #define VOIDDISPLAY_IOCTL(i, access) \
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800 + (i), METHOD_BUFFERED, (access))
@@ -36,6 +37,15 @@ DEFINE_GUID(GUID_DEVINTERFACE_VOIDDISPLAY,
 
 /* List current displays. Out: VOIDDISPLAY_STATE. */
 #define IOCTL_VOIDDISPLAY_LIST      VOIDDISPLAY_IOCTL(5, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+
+/* Add a custom mode to the advertised list. In: VOIDDISPLAY_MODE. */
+#define IOCTL_VOIDDISPLAY_ADD_MODE    VOIDDISPLAY_IOCTL(6, FILE_WRITE_ACCESS)
+
+/* Remove a custom mode (built-in defaults cannot be removed). In: VOIDDISPLAY_MODE. */
+#define IOCTL_VOIDDISPLAY_REMOVE_MODE VOIDDISPLAY_IOCTL(7, FILE_WRITE_ACCESS)
+
+/* List the advertised modes (defaults + custom). Out: VOIDDISPLAY_MODE_LIST. */
+#define IOCTL_VOIDDISPLAY_LIST_MODES  VOIDDISPLAY_IOCTL(8, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
 
 #include <pshpack1.h>
 
@@ -59,5 +69,10 @@ typedef struct _VOIDDISPLAY_STATE {
     UINT32 Count;      /* number of displays in use */
     VOIDDISPLAY_ENTRY Entries[VOIDDISPLAY_MAX_DISPLAYS];
 } VOIDDISPLAY_STATE;
+
+typedef struct _VOIDDISPLAY_MODE_LIST {
+    UINT32 Count;      /* number of advertised modes (defaults + custom) */
+    VOIDDISPLAY_MODE Modes[VOIDDISPLAY_MAX_MODES];
+} VOIDDISPLAY_MODE_LIST;
 
 #include <poppack.h>
