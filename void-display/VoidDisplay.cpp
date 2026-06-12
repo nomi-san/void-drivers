@@ -273,7 +273,7 @@ NTSTATUS VoidDisplayAdapterCommitModes(IDDCX_ADAPTER AdapterObject,
                                        const IDARG_IN_COMMITMODES* pInArgs)
 {
     UNREFERENCED_PARAMETER(AdapterObject);
-    UNREFERENCED_PARAMETER(pInArgs);
+    VOID_LOG("AdapterCommitModes PathCount=%u", pInArgs ? pInArgs->PathCount : 0);
     // Accept whatever path/mode set the OS commits.
     return STATUS_SUCCESS;
 }
@@ -285,6 +285,7 @@ NTSTATUS VoidDisplayParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTI
     VOID_MODE_DESC modes[VOIDDISPLAY_MAX_MODES];
     unsigned count = VoidModesGet(modes, VOIDDISPLAY_MAX_MODES);
 
+    VOID_LOG("ParseMonitorDescription in=%u out=%u", pInArgs->MonitorModeBufferInputCount, count);
     pOutArgs->MonitorModeBufferOutputCount = count;
     if (pInArgs->MonitorModeBufferInputCount == 0) {
         return STATUS_SUCCESS;  // size query
@@ -331,6 +332,7 @@ NTSTATUS VoidDisplayMonitorQueryModes(IDDCX_MONITOR MonitorObject,
     VOID_MODE_DESC modes[VOIDDISPLAY_MAX_MODES];
     unsigned count = VoidModesGet(modes, VOIDDISPLAY_MAX_MODES);
 
+    VOID_LOG("QueryTargetModes in=%u out=%u", pInArgs->TargetModeBufferInputCount, count);
     pOutArgs->TargetModeBufferOutputCount = count;
     if (pInArgs->TargetModeBufferInputCount == 0) {
         return STATUS_SUCCESS;
@@ -408,8 +410,11 @@ void VoidDisplayDevice::InitAdapter()
     m_InitStarted = true;
 
     IDDCX_ADAPTER_CAPS caps = {};
-    caps.Size                 = sizeof(caps);
-    caps.MaxMonitorsSupported = VOIDDISPLAY_MAX_DISPLAYS;
+    caps.Size                    = sizeof(caps);
+    caps.MaxMonitorsSupported    = VOIDDISPLAY_MAX_DISPLAYS;
+    // Total display bandwidth budget. 0 would mean "no active mode may exceed 0",
+    // i.e. nothing can be driven; set it very high so any mode set is allowed.
+    caps.MaxDisplayPipelineRate  = (UINT64)1000000000ULL * 1000ULL;
 
     IDDCX_ENDPOINT_VERSION firmware = {};
     firmware.Size     = sizeof(firmware);
@@ -474,7 +479,11 @@ NTSTATUS VoidDisplayDevice::CreateMonitorLocked(UINT32 index, const VOIDDISPLAY_
 
     IDDCX_MONITOR_INFO info = {};
     info.Size                       = sizeof(info);
-    info.MonitorType                = DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI;
+    // Declare DisplayPort-External (what Parsec's VDD reports). HDMI makes
+    // Windows pop the Win+P projection chooser and leave the display inactive;
+    // INDIRECT_WIRED suppresses the chooser but the OS won't auto-extend to it.
+    // DISPLAYPORT_EXTERNAL gives both: no chooser AND auto-extend.
+    info.MonitorType                = DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL;
     info.ConnectorIndex             = index;
     info.MonitorDescription.Size    = sizeof(info.MonitorDescription);
     info.MonitorDescription.Type    = IDDCX_MONITOR_DESCRIPTION_TYPE_EDID;
@@ -542,31 +551,31 @@ void VoidDisplayDevice::DestroyMonitorLocked(UINT32 index)
 
 NTSTATUS VoidDisplayDevice::AddMonitor(const VOIDDISPLAY_MODE& mode, UINT32* outIndex)
 {
-    WdfWaitLockAcquire(m_Lock, NULL);
+    VOIDDISPLAY_MODE m = mode;
+    if (m.Width == 0 || m.Height == 0 || m.RefreshHz == 0) {
+        m.Width = VOID_DEFAULT_WIDTH;
+        m.Height = VOID_DEFAULT_HEIGHT;
+        m.RefreshHz = VOID_DEFAULT_REFRESH;
+    }
+    // Ensure the OS sees this mode in the monitor's list when it arrives.
+    VoidModesAdd(m.Width, m.Height, m.RefreshHz);
 
+    WdfWaitLockAcquire(m_Lock, NULL);
     NTSTATUS status = STATUS_DEVICE_NOT_READY;
     if (m_Adapter != nullptr) {
         UINT32 slot = VOIDDISPLAY_MAX_DISPLAYS;
         for (UINT32 i = 0; i < VOIDDISPLAY_MAX_DISPLAYS; ++i) {
             if (!m_Slots[i].InUse) { slot = i; break; }
         }
-
         if (slot == VOIDDISPLAY_MAX_DISPLAYS) {
             status = STATUS_INSUFFICIENT_RESOURCES;
         } else {
-            VOIDDISPLAY_MODE m = mode;
-            if (m.Width == 0 || m.Height == 0 || m.RefreshHz == 0) {
-                m.Width = VOID_DEFAULT_WIDTH;
-                m.Height = VOID_DEFAULT_HEIGHT;
-                m.RefreshHz = VOID_DEFAULT_REFRESH;
-            }
             status = CreateMonitorLocked(slot, m);
             if (NT_SUCCESS(status) && outIndex) {
                 *outIndex = slot;
             }
         }
     }
-
     WdfWaitLockRelease(m_Lock);
     return status;
 }
@@ -587,12 +596,14 @@ NTSTATUS VoidDisplayDevice::SetMode(UINT32 index, const VOIDDISPLAY_MODE& mode)
     if (index >= VOIDDISPLAY_MAX_DISPLAYS) {
         return STATUS_INVALID_PARAMETER;
     }
+    // The target mode must be advertised; ensure it is before applying.
+    VoidModesAdd(mode.Width, mode.Height, mode.RefreshHz);
+
     WdfWaitLockAcquire(m_Lock, NULL);
     NTSTATUS status = STATUS_NOT_FOUND;
     if (m_Slots[index].InUse) {
         m_Slots[index].Mode = mode;
         status = STATUS_SUCCESS;
-        // TODO: drive an actual mode switch via IddCxMonitorUpdateModes + path commit.
     }
     WdfWaitLockRelease(m_Lock);
     return status;
@@ -663,16 +674,20 @@ void VoidDisplayDevice::GetModes(VOIDDISPLAY_MODE_LIST* out)
 void VoidDisplayDevice::AssignSwapChain(UINT32 index, IDDCX_SWAPCHAIN swapChain,
                                         LUID renderAdapter, HANDLE newFrameEvent)
 {
+    VOID_LOG("AssignSwapChain slot=%u renderLUID=%ld:%lu", index,
+             renderAdapter.HighPart, renderAdapter.LowPart);
     WdfWaitLockAcquire(m_Lock, NULL);
     if (index < VOIDDISPLAY_MAX_DISPLAYS && m_Slots[index].InUse) {
         m_Slots[index].Processor.reset();
 
         auto device = std::make_shared<Direct3DDevice>(renderAdapter);
-        if (SUCCEEDED(device->Init())) {
+        HRESULT hr = device->Init();
+        if (SUCCEEDED(hr)) {
             m_Slots[index].Processor =
                 std::make_unique<SwapChainProcessor>(swapChain, device, newFrameEvent);
+            VOID_LOG("SwapChain processor started for slot %u", index);
         } else {
-            VOID_LOG("Direct3DDevice Init failed for slot %u", index);
+            VOID_LOG("Direct3DDevice Init failed for slot %u hr=0x%08X", index, hr);
         }
     }
     WdfWaitLockRelease(m_Lock);

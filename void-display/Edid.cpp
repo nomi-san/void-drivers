@@ -3,7 +3,7 @@
 // A structurally valid EDID 1.4 base block branded for VoidDisplay.
 //
 //   bytes  8- 9 : manufacturer id "VVD" -> 0x5A 0xC4
-//   bytes 10-11 : product code 0x0001
+//   bytes 10-11 : product code 0x00A1
 //   bytes 12-15 : serial number (patched per monitor by VoidBuildEdid)
 //   byte     17 : year = 2026 - 1990 = 36 (0x24)
 //   bytes 54-71 : preferred detailed timing = 1920x1080 @ 60
@@ -15,8 +15,8 @@
 static const UINT8 s_VoidEdidTemplate[VOIDDISPLAY_EDID_SIZE] = {
     // header
     0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
-    // manufacturer "VVD", product 0x0001, serial (placeholder)
-    0x5A, 0xC4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // manufacturer "VVD", product 0x00A1, serial (placeholder)
+    0x5A, 0xC4, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x00,
     // week 1, year 2026, EDID 1.4
     0x01, 0x24, 0x01, 0x04,
     // digital input (DisplayPort, 8 bpc), 53x30 cm, gamma 2.2, features

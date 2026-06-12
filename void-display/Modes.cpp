@@ -29,8 +29,8 @@ DISPLAYCONFIG_VIDEO_SIGNAL_INFO VoidCreateSignalInfo(UINT32 width, UINT32 height
 {
     DISPLAYCONFIG_VIDEO_SIGNAL_INFO info = {};
 
-    // No blanking is modeled; for an indirect display the active geometry and
-    // the rational refresh rates are what matter to the OS.
+    // Zero-blanking timing (totalSize == activeSize), matching Parsec's VDD and
+    // the IddCx samples: pixelRate = w*h*vsync, hSync = h*vsync.
     const UINT64 totalPixels = (UINT64)width * (UINT64)height;
 
     info.pixelRate              = totalPixels * (UINT64)vsync;
