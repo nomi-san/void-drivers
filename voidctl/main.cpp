@@ -12,9 +12,16 @@
 
 #include "voidrv.h"
 
+#include <windows.h>
+
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+
+static void PrintLastError(const char* what)
+{
+    std::printf("error: %s (Win32 %lu)\n", what, GetLastError());
+}
 
 static int Usage()
 {
@@ -65,7 +72,13 @@ static int CmdVersion()
         std::printf("error: cannot open VoidDisplay (is it installed?)\n");
         return 1;
     }
-    std::printf("VoidDisplay interface version: %u\n", VoidrvDisplayVersion(h));
+    SetLastError(0);
+    uint32_t ver = VoidrvDisplayVersion(h);
+    if (ver == 0) {
+        PrintLastError("version query failed/returned 0");
+    } else {
+        std::printf("VoidDisplay interface version: %u\n", ver);
+    }
     VoidrvDisplayClose(h);
     return 0;
 }
@@ -80,7 +93,7 @@ static int CmdList()
     VoidrvDisplayState st;
     std::memset(&st, 0, sizeof(st));
     if (!VoidrvDisplayList(h, &st)) {
-        std::printf("error: list failed\n");
+        PrintLastError("list failed");
         VoidrvDisplayClose(h);
         return 1;
     }
@@ -176,7 +189,7 @@ static int CmdModes()
     VoidrvModeList list;
     std::memset(&list, 0, sizeof(list));
     if (!VoidrvDisplayListModes(h, &list)) {
-        std::printf("error: list modes failed\n");
+        PrintLastError("list modes failed");
         VoidrvDisplayClose(h);
         return 1;
     }

@@ -114,6 +114,7 @@ NTSTATUS VoidDisplayDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     iddConfig.EvtIddCxAdapterCommitModes                = VoidDisplayAdapterCommitModes;
     iddConfig.EvtIddCxMonitorAssignSwapChain            = VoidDisplayMonitorAssignSwapChain;
     iddConfig.EvtIddCxMonitorUnassignSwapChain          = VoidDisplayMonitorUnassignSwapChain;
+    iddConfig.EvtIddCxDeviceIoControl                   = VoidDisplayIoDeviceControl;
 
     NTSTATUS status = IddCxDeviceInitConfig(pDeviceInit, &iddConfig);
     if (!NT_SUCCESS(status)) {
@@ -144,18 +145,9 @@ NTSTATUS VoidDisplayDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     auto* wrapper = WdfObjectGet_VoidDeviceContextWrapper(device);
     wrapper->pContext = new VoidDisplayDevice(device);
 
-    // Control IOCTL queue.
-    WDF_IO_QUEUE_CONFIG queueConfig;
-    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
-    queueConfig.EvtIoDeviceControl = VoidDisplayIoDeviceControl;
-
-    WDFQUEUE queue = nullptr;
-    status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &queue);
-    if (!NT_SUCCESS(status)) {
-        VOID_LOG("WdfIoQueueCreate failed 0x%08X", status);
-        return status;
-    }
-
+    // IO control requests are delivered through IddCx (EvtIddCxDeviceIoControl,
+    // set above) because IddCx owns the device's IRP_MJ_DEVICE_CONTROL dispatching.
+    // We only expose a device interface for user mode to open and target.
     status = WdfDeviceCreateDeviceInterface(device, &GUID_DEVINTERFACE_VOIDDISPLAY, nullptr);
     if (!NT_SUCCESS(status)) {
         VOID_LOG("WdfDeviceCreateDeviceInterface failed 0x%08X", status);
@@ -181,15 +173,14 @@ NTSTATUS VoidDisplayDeviceD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Previ
 // Control IOCTLs
 // ---------------------------------------------------------------------------
 _Use_decl_annotations_
-VOID VoidDisplayIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request,
+VOID VoidDisplayIoDeviceControl(WDFDEVICE Device, WDFREQUEST Request,
                                 size_t OutputBufferLength, size_t InputBufferLength,
                                 ULONG IoControlCode)
 {
-    UNREFERENCED_PARAMETER(OutputBufferLength);
-    UNREFERENCED_PARAMETER(InputBufferLength);
+    VOID_LOG("IoDeviceControl code=0x%08X inLen=%Iu outLen=%Iu", IoControlCode,
+             InputBufferLength, OutputBufferLength);
 
-    WDFDEVICE device = WdfIoQueueGetDevice(Queue);
-    auto* wrapper = WdfObjectGet_VoidDeviceContextWrapper(device);
+    auto* wrapper = WdfObjectGet_VoidDeviceContextWrapper(Device);
     VoidDisplayDevice* dev = wrapper ? wrapper->pContext : nullptr;
     if (!dev) {
         WdfRequestComplete(Request, STATUS_DEVICE_NOT_READY);

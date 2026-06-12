@@ -36,9 +36,12 @@ Standard IddCx flow:
 2. Device add -> `IddCxDeviceInitConfig`, create the WDFDEVICE, then
    `IddCxDeviceInitialize`. Register the IddCx client callbacks
    (`IDD_CX_CLIENT_CONFIG`): adapter init-finished, monitor assign/unassign swap
-   chain, monitor mode query/commit, etc.
-3. Create the device interface `{40255101-a910-441c-84d6-9f027197fa70}` and a
-   default WDFQUEUE for control IOCTLs.
+   chain, monitor mode query/commit, and `EvtIddCxDeviceIoControl` for control IOCTLs.
+3. Create the device interface `{40255101-a910-441c-84d6-9f027197fa70}` for user
+   mode to open. Control IOCTLs are delivered through `EvtIddCxDeviceIoControl`, NOT
+   a custom WDF queue: IddCx owns the device's `IRP_MJ_DEVICE_CONTROL` dispatching,
+   so a default/own queue never receives them (and `WdfDeviceConfigureRequestDispatching`
+   returns `STATUS_WDF_BUSY`).
 4. On adapter init-finished, restore any persisted displays (section 6), then begin
    serving control IOCTLs.
 

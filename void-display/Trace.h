@@ -11,7 +11,15 @@
 #include <windows.h>
 #include <stdio.h>
 
-#if DBG
+#if defined(DBG) && DBG
+#define VOID_LOG_ENABLED 1
+#elif defined(_DEBUG)
+#define VOID_LOG_ENABLED 1
+#else
+#define VOID_LOG_ENABLED 0
+#endif
+
+#if VOID_LOG_ENABLED
 #define VOID_LOG(fmt, ...)                                                      \
     do {                                                                        \
         char _voidLogBuf[512];                                                  \

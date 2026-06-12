@@ -142,9 +142,9 @@ WDF_DECLARE_CONTEXT_TYPE(VoidMonitorContextWrapper);
 // ---------------------------------------------------------------------------
 EXTERN_C DRIVER_INITIALIZE DriverEntry;
 
-EVT_WDF_DRIVER_DEVICE_ADD          VoidDisplayDeviceAdd;
-EVT_WDF_DEVICE_D0_ENTRY            VoidDisplayDeviceD0Entry;
-EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL VoidDisplayIoDeviceControl;
+EVT_WDF_DRIVER_DEVICE_ADD    VoidDisplayDeviceAdd;
+EVT_WDF_DEVICE_D0_ENTRY      VoidDisplayDeviceD0Entry;
+EVT_IDD_CX_DEVICE_IO_CONTROL VoidDisplayIoDeviceControl;
 
 EVT_IDD_CX_ADAPTER_INIT_FINISHED                 VoidDisplayAdapterInitFinished;
 EVT_IDD_CX_ADAPTER_COMMIT_MODES                  VoidDisplayAdapterCommitModes;
