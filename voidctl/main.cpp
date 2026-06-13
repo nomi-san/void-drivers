@@ -52,7 +52,12 @@ static int Usage()
         "  voidctl kbd tap <hidUsage>        (tap one HID usage, hex e.g. 0x04 = 'a')\n"
         "\n"
         "  voidctl pad demo [xbox|ds4|ds5] [s]   (animate a pad; rumble prints)\n"
-        "  voidctl pad hold [xbox|ds4|ds5] [s]   (hold a fixed state; for joy.cpl/tests)\n");
+        "  voidctl pad hold [xbox|ds4|ds5] [s]   (hold a fixed state; for joy.cpl/tests)\n"
+        "\n"
+        "  voidctl touch tap [x y]           (tap at a pixel; default screen center)\n"
+        "  voidctl touch hold [x y] [s]      (hold a contact; for digitizer tests)\n"
+        "  voidctl touch demo [s]            (two-finger animation)\n"
+        "  voidctl pen demo [s]              (pen stroke with pressure + tilt)\n");
     return 1;
 }
 
@@ -513,6 +518,120 @@ static int CmdPadHold(int argc, char** argv)
     return 0;
 }
 
+// ---- touch + pen ----
+
+static int CmdTouchTap(int argc, char** argv)
+{
+    int x = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : (GetSystemMetrics(SM_CXSCREEN) / 2);
+    int y = argc > 1 ? (int)std::strtol(argv[1], nullptr, 10) : (GetSystemMetrics(SM_CYSCREEN) / 2);
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_TOUCH);
+    if (!h) {
+        std::printf("error: cannot create touch digitizer (is VoidInput installed?)\n");
+        return 1;
+    }
+    std::printf("tap at (%d,%d)\n", x, y);
+    VoidrvInputTouchContact(h, 0, VOIDRV_TOUCH_DOWN, x, y, 512, 8);
+    Sleep(60);
+    VoidrvInputTouchContact(h, 0, VOIDRV_TOUCH_UP, x, y, 0, 8);
+    Sleep(30);
+    VoidrvInputClose(h);
+    std::printf("done\n");
+    return 0;
+}
+
+static int CmdTouchHold(int argc, char** argv)
+{
+    int x = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : (GetSystemMetrics(SM_CXSCREEN) / 2);
+    int y = argc > 1 ? (int)std::strtol(argv[1], nullptr, 10) : (GetSystemMetrics(SM_CYSCREEN) / 2);
+    int seconds = argc > 2 ? (int)std::strtol(argv[2], nullptr, 10) : 4;
+    if (seconds <= 0) {
+        seconds = 4;
+    }
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_TOUCH);
+    if (!h) {
+        std::printf("error: cannot create touch digitizer\n");
+        return 1;
+    }
+    std::printf("holding touch contact at (%d,%d) for %d s\n", x, y, seconds);
+    VoidrvInputTouchContact(h, 0, VOIDRV_TOUCH_DOWN, x, y, 512, 8);
+    for (int i = 0; i < seconds * 10; ++i) {
+        VoidrvInputTouchContact(h, 0, VOIDRV_TOUCH_MOVE, x, y, 512, 8);
+        Sleep(100);
+    }
+    VoidrvInputTouchContact(h, 0, VOIDRV_TOUCH_UP, x, y, 0, 8);
+    Sleep(30);
+    VoidrvInputClose(h);
+    std::printf("done\n");
+    return 0;
+}
+
+static int CmdTouchDemo(int argc, char** argv)
+{
+    int seconds = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : 5;
+    if (seconds <= 0) {
+        seconds = 5;
+    }
+    int cx = GetSystemMetrics(SM_CXSCREEN) / 2;
+    int cy = GetSystemMetrics(SM_CYSCREEN) / 2;
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_TOUCH);
+    if (!h) {
+        std::printf("error: cannot create touch digitizer\n");
+        return 1;
+    }
+    std::printf("two-finger demo around (%d,%d) for %d s\n", cx, cy, seconds);
+    const int hz = 60;
+    const int ticks = seconds * hz;
+    for (int i = 0; i < ticks; ++i) {
+        double th = (double)i / hz * 3.14159265358979;
+        int r = 200;
+        int x0 = cx + (int)(r * std::cos(th)), y0 = cy + (int)(r * std::sin(th));
+        int x1 = cx - (int)(r * std::cos(th)), y1 = cy - (int)(r * std::sin(th));
+        uint8_t act = (i == 0) ? VOIDRV_TOUCH_DOWN : VOIDRV_TOUCH_MOVE;
+        VoidrvInputTouchContact(h, 0, act, x0, y0, 512, 8);
+        VoidrvInputTouchContact(h, 1, act, x1, y1, 512, 8);
+        Sleep(1000 / hz);
+    }
+    VoidrvInputTouchCancelAll(h);
+    Sleep(30);
+    VoidrvInputClose(h);
+    std::printf("done\n");
+    return 0;
+}
+
+static int CmdPenDemo(int argc, char** argv)
+{
+    int seconds = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : 4;
+    if (seconds <= 0) {
+        seconds = 4;
+    }
+    int x0 = GetSystemMetrics(SM_CXSCREEN) / 4;
+    int y0 = GetSystemMetrics(SM_CYSCREEN) / 2;
+    int span = GetSystemMetrics(SM_CXSCREEN) / 2;
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_TOUCH);
+    if (!h) {
+        std::printf("error: cannot create digitizer\n");
+        return 1;
+    }
+    std::printf("pen stroke for %d s (pressure ramps, fixed tilt)\n", seconds);
+    const int hz = 60;
+    const int ticks = seconds * hz;
+    VoidrvInputPen(h, VOIDRV_TOUCH_HOVER, x0, y0, 0, 0, 0, false, false);
+    for (int i = 0; i < ticks; ++i) {
+        int x = x0 + (span * i / ticks);
+        int y = y0 + (int)(80.0 * std::sin((double)i / hz * 6.28318530717959));
+        uint16_t pr = (uint16_t)(100 + (900 * i / ticks));
+        uint8_t act = (i == 0) ? VOIDRV_TOUCH_DOWN : VOIDRV_TOUCH_MOVE;
+        VoidrvInputPen(h, act, x, y, pr, (int8_t)15, (int8_t)-10, false, false);
+        Sleep(1000 / hz);
+    }
+    VoidrvInputPen(h, VOIDRV_TOUCH_UP,     x0 + span, y0, 0, 0, 0, false, false);
+    VoidrvInputPen(h, VOIDRV_TOUCH_CANCEL, x0 + span, y0, 0, 0, 0, false, false);
+    Sleep(30);
+    VoidrvInputClose(h);
+    std::printf("done\n");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3) {
@@ -545,6 +664,20 @@ int main(int argc, char** argv)
         else if (std::strcmp(cmd, "version") == 0) return CmdMouseVersion();
         else if (std::strcmp(cmd, "demo")    == 0) return CmdPadDemo(rest_argc, rest_argv);
         else if (std::strcmp(cmd, "hold")    == 0) return CmdPadHold(rest_argc, rest_argv);
+        return Usage();
+    }
+
+    if (std::strcmp(group, "touch") == 0) {
+        if      (std::strcmp(cmd, "status")  == 0) return CmdMouseStatus();   // device-wide
+        else if (std::strcmp(cmd, "version") == 0) return CmdMouseVersion();
+        else if (std::strcmp(cmd, "tap")     == 0) return CmdTouchTap(rest_argc, rest_argv);
+        else if (std::strcmp(cmd, "hold")    == 0) return CmdTouchHold(rest_argc, rest_argv);
+        else if (std::strcmp(cmd, "demo")    == 0) return CmdTouchDemo(rest_argc, rest_argv);
+        return Usage();
+    }
+
+    if (std::strcmp(group, "pen") == 0) {
+        if      (std::strcmp(cmd, "demo") == 0) return CmdPenDemo(rest_argc, rest_argv);
         return Usage();
     }
 

@@ -238,6 +238,39 @@ typedef void (*VoidrvRumbleCallback)(void* context, uint8_t low, uint8_t high,
 bool              VoidrvInputPadSetRumbleCallback(VoidrvInputHandle handle,
                                                   VoidrvRumbleCallback callback, void* context);
 
+/* ---- Touch + pen digitizer ---- */
+
+/* Pointer action for the touch/pen helpers. */
+#define VOIDRV_TOUCH_DOWN   0   /* contact down / pen tip down */
+#define VOIDRV_TOUCH_MOVE   1   /* update while in contact */
+#define VOIDRV_TOUCH_UP     2   /* contact lifted / pen tip up (pen stays in range) */
+#define VOIDRV_TOUCH_HOVER  3   /* in range, not in contact */
+#define VOIDRV_TOUCH_CANCEL 4   /* touch: cancel this contact; pen: leave range */
+
+/* Touch contact event on a touch-digitizer handle. contactId identifies the finger
+   (0..9 live at once). px/py are desktop pixels mapped to the associated display
+   (primary by default; see VoidrvInputTouchSetBounds). pressure (0..1023) and size
+   (contact width in pixels) are best-effort. The SDK keeps the live contact set and
+   submits the full multitouch report each call. */
+bool              VoidrvInputTouchContact(VoidrvInputHandle handle, uint8_t contactId,
+                                          uint8_t action, int32_t px, int32_t py,
+                                          uint16_t pressure, uint8_t size);
+
+/* Drop all active touch contacts (and lift the pen), emitting a clean release. */
+bool              VoidrvInputTouchCancelAll(VoidrvInputHandle handle);
+
+/* Pixel rectangle the touch/pen pixel helpers map within. width<=0 restores the
+   default (primary display). */
+bool              VoidrvInputTouchSetBounds(VoidrvInputHandle handle, int32_t left,
+                                            int32_t top, int32_t width, int32_t height);
+
+/* Pen event on a touch-digitizer handle. px/py are desktop pixels; pressure 0..1023;
+   tiltX/tiltY in degrees (-90..90); barrel/eraser are button flags. action is a
+   VOIDRV_TOUCH_* code (UP keeps the pen hovering; CANCEL lifts it out of range). */
+bool              VoidrvInputPen(VoidrvInputHandle handle, uint8_t action,
+                                 int32_t px, int32_t py, uint16_t pressure,
+                                 int8_t tiltX, int8_t tiltY, bool barrel, bool eraser);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

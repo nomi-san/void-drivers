@@ -508,6 +508,10 @@ bool VoidrvDisplayListModes(VoidrvDisplayHandle handle, VoidrvModeList* list)
 #define VOIDRV_MOUSE_RID_ABSOLUTE 2
 #define VOIDRV_KBD_RID_KEYBOARD   1
 #define VOIDRV_KBD_RID_CONSUMER   2
+#define VOIDRV_TOUCH_RID_TOUCH    1
+#define VOIDRV_TOUCH_RID_MAXCOUNT 2
+#define VOIDRV_TOUCH_RID_PEN      3
+#define VOIDRV_TOUCH_MAX_CONTACTS 10
 
 struct VoidrvInput {
     HANDLE          Device;
@@ -522,7 +526,17 @@ struct VoidrvInput {
     uint8_t  KbdModifiers;          // held VOIDRV_KMOD_* mask
     uint8_t  KbdKeys[6];            // held HID key usages (0 = empty)
 
-    // Gamepad output/feature event reader (drains the output-event channel).
+    // Touch digitizer state: the active-contact prefix (Windows requires the live
+    // contacts to be contiguous). TouchCount slots in [0,TouchCount) are valid.
+    struct { uint8_t Id; uint8_t Tip; uint16_t X, Y; } TouchSlots[VOIDRV_TOUCH_MAX_CONTACTS];
+    uint8_t  TouchCount;
+    uint16_t TouchScanTime;
+    // Pen state. PenFlags: bit0 tip, bit1 barrel, bit2 eraser, bit3 invert, bit4 in-range.
+    uint16_t PenX, PenY, PenPressure;
+    int8_t   PenTiltX, PenTiltY;
+    uint8_t  PenFlags;
+
+    // Gamepad/digitizer output/feature event reader (drains the event channel).
     VoidrvRumbleCallback RumbleCb;
     void*                RumbleCtx;
     HANDLE               RumbleThread;
@@ -583,9 +597,11 @@ VoidrvInputHandle VoidrvInputCreate(VoidrvInputType type)
     d->Device = h;
     d->Type   = type;
 
-    // Pads need the output/feature reader running from the start: DS4/DS5 answer
-    // feature requests during enumeration, and all pads receive rumble.
-    if (type == VOIDRV_INPUT_XBOXONE || type == VOIDRV_INPUT_DS4 || type == VOIDRV_INPUT_DS5) {
+    // Pads and the touch digitizer need the output/feature reader running from the
+    // start: DS4/DS5 answer feature requests during enumeration, pads receive
+    // rumble, and the touch screen answers the contact-count-maximum feature read.
+    if (type == VOIDRV_INPUT_XBOXONE || type == VOIDRV_INPUT_DS4 ||
+        type == VOIDRV_INPUT_DS5 || type == VOIDRV_INPUT_TOUCH) {
         d->RumbleStop   = 0;
         d->RumbleThread = CreateThread(nullptr, 0, VoidrvPadEventReader, d, 0, nullptr);
         // If the thread fails to start, the device still works for input.
@@ -1133,6 +1149,193 @@ bool VoidrvInputPadReport(VoidrvInputHandle handle, const VoidrvPadState* state)
     return false;
 }
 
+// ---- touch + pen digitizer ----
+
+// Index of the active slot holding contactId, or -1.
+static int TouchFindSlot(VoidrvInputHandle h, uint8_t id)
+{
+    for (uint8_t i = 0; i < h->TouchCount; ++i) {
+        if (h->TouchSlots[i].Id == id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+// Build the 64-byte touch report (id 1) from the active-contact prefix:
+// 10 fingers x {flags, id, X(2), Y(2)} + contact count + scan time.
+static void PackTouchReport(VoidrvInputHandle h, uint8_t r[64])
+{
+    memset(r, 0, 64);
+    r[0] = VOIDRV_TOUCH_RID_TOUCH;
+    for (uint8_t i = 0; i < h->TouchCount && i < VOIDRV_TOUCH_MAX_CONTACTS; ++i) {
+        uint8_t* f = r + 1 + i * 6;
+        f[0] = h->TouchSlots[i].Tip ? 0x03 : 0x00;   // tip switch + confidence
+        f[1] = h->TouchSlots[i].Id;
+        f[2] = (uint8_t)(h->TouchSlots[i].X & 0xFF);
+        f[3] = (uint8_t)(h->TouchSlots[i].X >> 8);
+        f[4] = (uint8_t)(h->TouchSlots[i].Y & 0xFF);
+        f[5] = (uint8_t)(h->TouchSlots[i].Y >> 8);
+    }
+    r[61] = h->TouchCount;
+    h->TouchScanTime = (uint16_t)(h->TouchScanTime + 10);   // monotonic (100us units)
+    r[62] = (uint8_t)(h->TouchScanTime & 0xFF);
+    r[63] = (uint8_t)(h->TouchScanTime >> 8);
+}
+
+static bool TouchSubmit(VoidrvInputHandle h)
+{
+    uint8_t report[64];
+    PackTouchReport(h, report);
+    return InputWrite(h->Device, report, sizeof(report));
+}
+
+// Drop the slot at index s, compacting the active prefix (Windows wants the live
+// contacts contiguous in the next report).
+static void TouchReleaseSlot(VoidrvInputHandle h, int s)
+{
+    if (s < 0 || (uint8_t)s >= h->TouchCount) {
+        return;
+    }
+    for (uint8_t i = (uint8_t)s; i + 1 < h->TouchCount; ++i) {
+        h->TouchSlots[i] = h->TouchSlots[i + 1];
+    }
+    h->TouchCount--;
+}
+
+// Submit the pen report (id 3) from the handle's pen state.
+static bool PenSubmit(VoidrvInputHandle h)
+{
+    uint8_t r[10];
+    memset(r, 0, sizeof(r));
+    r[0] = VOIDRV_TOUCH_RID_PEN;
+    r[1] = h->PenFlags;
+    r[2] = (uint8_t)(h->PenX & 0xFF);        r[3] = (uint8_t)(h->PenX >> 8);
+    r[4] = (uint8_t)(h->PenY & 0xFF);        r[5] = (uint8_t)(h->PenY >> 8);
+    r[6] = (uint8_t)(h->PenPressure & 0xFF); r[7] = (uint8_t)(h->PenPressure >> 8);
+    r[8] = (uint8_t)h->PenTiltX;
+    r[9] = (uint8_t)h->PenTiltY;
+    return InputWrite(h->Device, r, sizeof(r));
+}
+
+bool VoidrvInputTouchContact(VoidrvInputHandle handle, uint8_t contactId, uint8_t action,
+                             int32_t px, int32_t py, uint16_t pressure, uint8_t size)
+{
+    (void)pressure; (void)size;   // contact area is implied; not carried by the report
+    if (!handle || handle->Type != VOIDRV_INPUT_TOUCH ||
+        handle->Device == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    uint16_t ax = 0, ay = 0;
+    MapPixels(handle, px, py, &ax, &ay);
+
+    int slot = TouchFindSlot(handle, contactId);
+    if (slot < 0) {
+        if (action == VOIDRV_TOUCH_UP || action == VOIDRV_TOUCH_CANCEL) {
+            return true;   // lifting an unknown contact - nothing to do
+        }
+        if (handle->TouchCount >= VOIDRV_TOUCH_MAX_CONTACTS) {
+            return false;  // contact table full
+        }
+        slot = handle->TouchCount++;
+        handle->TouchSlots[slot].Id = contactId;
+    }
+
+    handle->TouchSlots[slot].X = ax;
+    handle->TouchSlots[slot].Y = ay;
+    handle->TouchSlots[slot].Tip =
+        (action == VOIDRV_TOUCH_DOWN || action == VOIDRV_TOUCH_MOVE) ? (uint8_t)1 : (uint8_t)0;
+
+    bool ok = TouchSubmit(handle);   // the lift frame carries tip=0 for this contact
+    if (action == VOIDRV_TOUCH_UP || action == VOIDRV_TOUCH_CANCEL) {
+        TouchReleaseSlot(handle, slot);
+    }
+    return ok;
+}
+
+bool VoidrvInputTouchCancelAll(VoidrvInputHandle handle)
+{
+    if (!handle || handle->Type != VOIDRV_INPUT_TOUCH ||
+        handle->Device == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    bool ok = true;
+    for (uint8_t i = 0; i < handle->TouchCount; ++i) {
+        handle->TouchSlots[i].Tip = 0;
+    }
+    if (handle->TouchCount > 0) {
+        ok = TouchSubmit(handle);   // final frame: every contact lifted
+    }
+    handle->TouchCount = 0;
+    if (handle->PenFlags & 0x10) {  // pen still in range -> lift it out
+        handle->PenFlags = 0;
+        PenSubmit(handle);
+    }
+    return ok;
+}
+
+bool VoidrvInputTouchSetBounds(VoidrvInputHandle handle, int32_t left, int32_t top,
+                               int32_t width, int32_t height)
+{
+    if (!handle || handle->Type != VOIDRV_INPUT_TOUCH) {
+        return false;
+    }
+    handle->BoundsLeft = left;
+    handle->BoundsTop  = top;
+    handle->BoundsW    = width;
+    handle->BoundsH    = height;
+    return true;
+}
+
+bool VoidrvInputPen(VoidrvInputHandle handle, uint8_t action, int32_t px, int32_t py,
+                    uint16_t pressure, int8_t tiltX, int8_t tiltY, bool barrel, bool eraser)
+{
+    if (!handle || handle->Type != VOIDRV_INPUT_TOUCH ||
+        handle->Device == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    uint16_t ax = 0, ay = 0;
+    MapPixels(handle, px, py, &ax, &ay);
+    handle->PenX        = ax;
+    handle->PenY        = ay;
+    handle->PenPressure = pressure > 1023 ? 1023 : pressure;
+    handle->PenTiltX    = tiltX;
+    handle->PenTiltY    = tiltY;
+
+    bool tip = false, inRange = true;
+    switch (action) {
+        case VOIDRV_TOUCH_DOWN:
+        case VOIDRV_TOUCH_MOVE:   tip = true;  inRange = true;  break;
+        case VOIDRV_TOUCH_UP:                                            // lifted, hovering
+        case VOIDRV_TOUCH_HOVER:  tip = false; inRange = true;  break;
+        case VOIDRV_TOUCH_CANCEL: tip = false; inRange = false; break;   // out of range
+        default: return false;
+    }
+    uint8_t flags = 0;
+    if (tip)     flags |= 0x01;
+    if (barrel)  flags |= 0x02;
+    if (eraser)  flags |= 0x04 | 0x08;   // eraser implies invert
+    if (inRange) flags |= 0x10;
+    handle->PenFlags = flags;
+
+    return PenSubmit(handle);
+}
+
+// Touch digitizer feature: report the maximum contact count so Windows enumerates
+// it as a 10-point multitouch screen. The buffer leads with the report id (our
+// feature convention). Returns the byte count, or 0 for an unhandled feature.
+static uint32_t BuildTouchFeature(uint8_t reportId, uint8_t* out)
+{
+    if (reportId == VOIDRV_TOUCH_RID_MAXCOUNT) {
+        out[0] = VOIDRV_TOUCH_RID_MAXCOUNT;
+        out[1] = VOIDRV_TOUCH_MAX_CONTACTS;
+        return 2;
+    }
+    return 0;
+}
+
 // Pad output/feature event reader. Drains the GET_EVENT channel and services
 // each event: output reports -> rumble callback (Xbox or DS4), DS4 GET_FEATURE ->
 // the canned handshake response, everything else -> succeed. Runs for the life of
@@ -1195,6 +1398,8 @@ static DWORD WINAPI VoidrvPadEventReader(LPVOID param)
                 done.DataLength = BuildDs4Feature(ev.ReportId, done.Data);
             } else if (h->Type == VOIDRV_INPUT_DS5) {
                 done.DataLength = BuildDs5Feature(ev.ReportId, done.Data);
+            } else if (h->Type == VOIDRV_INPUT_TOUCH) {
+                done.DataLength = BuildTouchFeature(ev.ReportId, done.Data);
             }
         }
         // SetFeature (and unhandled GetFeature) just succeed with no data.
