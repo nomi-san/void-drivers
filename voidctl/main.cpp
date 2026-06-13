@@ -49,7 +49,10 @@ static int Usage()
         "  voidctl mouse demo [seconds]      (trace a circle; default 5s)\n"
         "\n"
         "  voidctl kbd type <text...>        (type text into the focused window)\n"
-        "  voidctl kbd tap <hidUsage>        (tap one HID usage, hex e.g. 0x04 = 'a')\n");
+        "  voidctl kbd tap <hidUsage>        (tap one HID usage, hex e.g. 0x04 = 'a')\n"
+        "\n"
+        "  voidctl pad demo [seconds]        (animate an Xbox pad; rumble prints)\n"
+        "  voidctl pad hold [seconds]        (hold a fixed state; for joy.cpl/tests)\n");
     return 1;
 }
 
@@ -409,6 +412,80 @@ static int CmdKbdTap(int argc, char** argv)
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// gamepad
+// ---------------------------------------------------------------------------
+static void PadRumbleCb(void*, uint8_t low, uint8_t high, uint8_t lt, uint8_t rt)
+{
+    std::printf("  rumble: low=%u high=%u ltrig=%u rtrig=%u\n", low, high, lt, rt);
+}
+
+static int CmdPadDemo(int argc, char** argv)
+{
+    int seconds = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : 5;
+    if (seconds <= 0) {
+        seconds = 5;
+    }
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_XBOXONE);
+    if (!h) {
+        std::printf("error: cannot create gamepad (is VoidInput installed?)\n");
+        return 1;
+    }
+    VoidrvInputPadSetRumbleCallback(h, PadRumbleCb, nullptr);
+    std::printf("xbox pad created; animating for %d s (open joy.cpl to watch; rumble prints)\n", seconds);
+
+    const int hz = 60;
+    const int ticks = seconds * hz;
+    const uint16_t face[] = { VOIDRV_PAD_A, VOIDRV_PAD_B, VOIDRV_PAD_X, VOIDRV_PAD_Y };
+    for (int i = 0; i < ticks; ++i) {
+        double th = (double)i / hz * 3.14159265358979;
+        VoidrvPadState st;
+        std::memset(&st, 0, sizeof(st));
+        st.ThumbLX      = (int16_t)(28000.0 * std::cos(th));
+        st.ThumbLY      = (int16_t)(28000.0 * std::sin(th));
+        st.Buttons      = face[(i / hz) % 4];          // change face button each second
+        st.LeftTrigger  = (uint8_t)((i * 4) & 0xFF);
+        VoidrvInputPadReport(h, &st);
+        Sleep(1000 / hz);
+    }
+    VoidrvPadState neutral;
+    std::memset(&neutral, 0, sizeof(neutral));
+    VoidrvInputPadReport(h, &neutral);
+    Sleep(30);
+    VoidrvInputClose(h);
+    std::printf("done\n");
+    return 0;
+}
+
+static int CmdPadHold(int argc, char** argv)
+{
+    int seconds = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : 4;
+    if (seconds <= 0) {
+        seconds = 4;
+    }
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_XBOXONE);
+    if (!h) {
+        std::printf("error: cannot create gamepad\n");
+        return 1;
+    }
+    // A known, checkable state: left stick full right + up, A and B held.
+    VoidrvPadState st;
+    std::memset(&st, 0, sizeof(st));
+    st.ThumbLX     = 32767;
+    st.ThumbLY     = 32767;
+    st.Buttons     = VOIDRV_PAD_A | VOIDRV_PAD_B;
+    st.LeftTrigger = 255;
+
+    std::printf("holding pad state (LX+ LY+ A+B) for %d s\n", seconds);
+    for (int i = 0; i < seconds * 10; ++i) {
+        VoidrvInputPadReport(h, &st);
+        Sleep(100);
+    }
+    VoidrvInputClose(h);
+    std::printf("done\n");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3) {
@@ -433,6 +510,14 @@ int main(int argc, char** argv)
         else if (std::strcmp(cmd, "version") == 0) return CmdMouseVersion();
         else if (std::strcmp(cmd, "type")    == 0) return CmdKbdType(rest_argc, rest_argv);
         else if (std::strcmp(cmd, "tap")     == 0) return CmdKbdTap(rest_argc, rest_argv);
+        return Usage();
+    }
+
+    if (std::strcmp(group, "pad") == 0) {
+        if      (std::strcmp(cmd, "status")  == 0) return CmdMouseStatus();   // device-wide
+        else if (std::strcmp(cmd, "version") == 0) return CmdMouseVersion();
+        else if (std::strcmp(cmd, "demo")    == 0) return CmdPadDemo(rest_argc, rest_argv);
+        else if (std::strcmp(cmd, "hold")    == 0) return CmdPadHold(rest_argc, rest_argv);
         return Usage();
     }
 

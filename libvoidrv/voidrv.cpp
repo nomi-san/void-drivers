@@ -479,6 +479,12 @@ struct VoidrvInput {
     // Stateful-tier keyboard state.
     uint8_t  KbdModifiers;          // held VOIDRV_KMOD_* mask
     uint8_t  KbdKeys[6];            // held HID key usages (0 = empty)
+
+    // Gamepad force-feedback reader (drains the output-event channel).
+    VoidrvRumbleCallback RumbleCb;
+    void*                RumbleCtx;
+    HANDLE               RumbleThread;
+    volatile LONG        RumbleStop;
 };
 
 VoidrvStatus VoidrvInputQueryStatus(void)
@@ -538,6 +544,18 @@ void VoidrvInputClose(VoidrvInputHandle handle)
 {
     if (!handle) {
         return;
+    }
+    if (handle->RumbleThread) {
+        // Closing the device handle cancels the reader's pending GET_EVENT (and
+        // removes the device), so the thread returns; then we join it.
+        InterlockedExchange(&handle->RumbleStop, 1);
+        if (handle->Device && handle->Device != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle->Device);
+            handle->Device = INVALID_HANDLE_VALUE;
+        }
+        WaitForSingleObject(handle->RumbleThread, INFINITE);
+        CloseHandle(handle->RumbleThread);
+        handle->RumbleThread = nullptr;
     }
     if (handle->Device && handle->Device != INVALID_HANDLE_VALUE) {
         CloseHandle(handle->Device);   // closing the handle removes the device
@@ -785,6 +803,116 @@ bool VoidrvInputReset(VoidrvInputHandle handle)
         return KeyboardSubmit(handle);
     }
     return false;
+}
+
+// ---- gamepad ----
+
+// Pack a VoidrvPadState into the 17-byte Xbox One HID report (no report id).
+static void PackXboxPad(const VoidrvPadState* s, uint8_t r[17])
+{
+    auto put16 = [](uint8_t* p, int32_t v) {
+        if (v < 0) v = 0; else if (v > 0xFFFF) v = 0xFFFF;
+        p[0] = (uint8_t)(v & 0xFF);
+        p[1] = (uint8_t)((v >> 8) & 0xFF);
+    };
+    memset(r, 0, 17);
+    put16(r + 0, (int32_t)s->ThumbLX + 0x8000);    // X: right positive
+    put16(r + 2, 0x8000 - (int32_t)s->ThumbLY);    // Y: HID down positive (invert)
+    put16(r + 4, (int32_t)s->ThumbRX + 0x8000);
+    put16(r + 6, 0x8000 - (int32_t)s->ThumbRY);
+    put16(r + 8,  (int32_t)s->LeftTrigger  << 2);  // 8-bit -> 10-bit range
+    put16(r + 10, (int32_t)s->RightTrigger << 2);
+
+    uint16_t b = s->Buttons;
+    uint8_t b0 = 0, b1 = 0;
+    if (b & VOIDRV_PAD_A)          b0 |= 0x01;
+    if (b & VOIDRV_PAD_B)          b0 |= 0x02;
+    if (b & VOIDRV_PAD_X)          b0 |= 0x04;
+    if (b & VOIDRV_PAD_Y)          b0 |= 0x08;
+    if (b & VOIDRV_PAD_LSHOULDER)  b0 |= 0x10;
+    if (b & VOIDRV_PAD_RSHOULDER)  b0 |= 0x20;
+    if (b & VOIDRV_PAD_BACK)       b0 |= 0x40;
+    if (b & VOIDRV_PAD_START)      b0 |= 0x80;
+    if (b & VOIDRV_PAD_LTHUMB)     b1 |= 0x01;
+    if (b & VOIDRV_PAD_RTHUMB)     b1 |= 0x02;
+    r[12] = b0;
+    r[13] = b1;
+
+    bool up = (b & VOIDRV_PAD_DPAD_UP)    != 0;
+    bool dn = (b & VOIDRV_PAD_DPAD_DOWN)  != 0;
+    bool lf = (b & VOIDRV_PAD_DPAD_LEFT)  != 0;
+    bool rg = (b & VOIDRV_PAD_DPAD_RIGHT) != 0;
+    uint8_t hat = 0;   // 0 = neutral (null state)
+    if      (up && rg) hat = 2;
+    else if (rg && dn) hat = 4;
+    else if (dn && lf) hat = 6;
+    else if (lf && up) hat = 8;
+    else if (up)       hat = 1;
+    else if (rg)       hat = 3;
+    else if (dn)       hat = 5;
+    else if (lf)       hat = 7;
+    r[14] = (uint8_t)(hat & 0x0F);
+
+    if (b & VOIDRV_PAD_GUIDE) r[15] |= 0x01;
+    r[16] = 0xFF;   // battery: full
+}
+
+bool VoidrvInputPadReport(VoidrvInputHandle handle, const VoidrvPadState* state)
+{
+    if (!handle || !state || handle->Type != VOIDRV_INPUT_XBOXONE ||
+        handle->Device == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    uint8_t report[17];
+    PackXboxPad(state, report);
+    DWORD written = 0;
+    return WriteFile(handle->Device, report, sizeof(report), &written, nullptr) != FALSE;
+}
+
+static DWORD WINAPI VoidrvRumbleThread(LPVOID param)
+{
+    auto* h = (VoidrvInputHandle)param;
+    for (;;) {
+        if (InterlockedCompareExchange(&h->RumbleStop, 0, 0) != 0) {
+            break;
+        }
+        VOIDINPUT_EVENT ev;
+        DWORD br = 0;
+        if (!DeviceIoControl(h->Device, IOCTL_VOIDINPUT_GET_EVENT, nullptr, 0,
+                             &ev, sizeof(ev), &br, nullptr)) {
+            break;   // handle closed / request cancelled
+        }
+        if (ev.Type == VoidInputEventWriteReport && ev.DataLength >= 8 && h->RumbleCb) {
+            uint8_t en   = ev.Data[0];
+            uint8_t low  = (en & 0x1) ? ev.Data[3] : 0;   // left  (low-freq) motor
+            uint8_t high = (en & 0x2) ? ev.Data[4] : 0;   // right (high-freq) motor
+            uint8_t lt   = (en & 0x4) ? ev.Data[1] : 0;   // left trigger motor
+            uint8_t rt   = (en & 0x8) ? ev.Data[2] : 0;   // right trigger motor
+            h->RumbleCb(h->RumbleCtx, low, high, lt, rt);
+        }
+        VOIDINPUT_EVENT_COMPLETE done;
+        ZeroMemory(&done, sizeof(done));
+        done.RequestId = ev.RequestId;
+        done.Status    = 0;
+        DeviceIoControl(h->Device, IOCTL_VOIDINPUT_COMPLETE_EVENT, &done, sizeof(done),
+                        nullptr, 0, &br, nullptr);
+    }
+    return 0;
+}
+
+bool VoidrvInputPadSetRumbleCallback(VoidrvInputHandle handle, VoidrvRumbleCallback callback, void* context)
+{
+    if (!handle || handle->Type != VOIDRV_INPUT_XBOXONE) {
+        return false;
+    }
+    handle->RumbleCb  = callback;
+    handle->RumbleCtx = context;
+    if (callback && !handle->RumbleThread) {
+        handle->RumbleStop   = 0;
+        handle->RumbleThread = CreateThread(nullptr, 0, VoidrvRumbleThread, handle, 0, nullptr);
+        return handle->RumbleThread != nullptr;
+    }
+    return true;
 }
 
 } // extern "C"

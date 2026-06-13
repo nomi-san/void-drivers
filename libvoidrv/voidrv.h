@@ -193,6 +193,51 @@ bool              VoidrvInputConsumer(VoidrvInputHandle handle, uint16_t usage);
 /* Release all held buttons / keys and emit a cleared report. */
 bool              VoidrvInputReset(VoidrvInputHandle handle);
 
+/* ---- Gamepad (Xbox One) ---- */
+
+/* Pad button bitmask (layout matches XInput's wButtons for familiarity). */
+#define VOIDRV_PAD_DPAD_UP    0x0001
+#define VOIDRV_PAD_DPAD_DOWN  0x0002
+#define VOIDRV_PAD_DPAD_LEFT  0x0004
+#define VOIDRV_PAD_DPAD_RIGHT 0x0008
+#define VOIDRV_PAD_START      0x0010   /* menu  */
+#define VOIDRV_PAD_BACK       0x0020   /* view  */
+#define VOIDRV_PAD_LTHUMB     0x0040
+#define VOIDRV_PAD_RTHUMB     0x0080
+#define VOIDRV_PAD_LSHOULDER  0x0100
+#define VOIDRV_PAD_RSHOULDER  0x0200
+#define VOIDRV_PAD_GUIDE      0x0400
+#define VOIDRV_PAD_A          0x1000
+#define VOIDRV_PAD_B          0x2000
+#define VOIDRV_PAD_X          0x4000
+#define VOIDRV_PAD_Y          0x8000
+
+/* Full gamepad state (one report). Sticks are signed (-32768..32767, up/right
+   positive); triggers are 0..255. */
+typedef struct VoidrvPadState {
+    uint16_t Buttons;       /* VOIDRV_PAD_* bitmask */
+    uint8_t  LeftTrigger;
+    uint8_t  RightTrigger;
+    int16_t  ThumbLX;
+    int16_t  ThumbLY;
+    int16_t  ThumbRX;
+    int16_t  ThumbRY;
+} VoidrvPadState;
+
+/* Submit a full gamepad report. Requires a gamepad handle. */
+bool              VoidrvInputPadReport(VoidrvInputHandle handle, const VoidrvPadState* state);
+
+/* Force-feedback callback. Motor magnitudes are 0..100; invoked on an SDK thread
+   whenever the OS/game sends rumble. Low/high = left (low-freq) / right (high-freq)
+   motors; lTrig/rTrig = impulse-trigger motors. */
+typedef void (*VoidrvRumbleCallback)(void* context, uint8_t low, uint8_t high,
+                                     uint8_t lTrigger, uint8_t rTrigger);
+
+/* Register (or clear, with NULL) the rumble callback for a gamepad handle. The
+   SDK starts a background reader that drains the output-event channel. */
+bool              VoidrvInputPadSetRumbleCallback(VoidrvInputHandle handle,
+                                                  VoidrvRumbleCallback callback, void* context);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
