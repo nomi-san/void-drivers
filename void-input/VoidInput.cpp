@@ -141,6 +141,24 @@ static VOID VoidInputEvtVhfWriteReport(PVOID VhfClientContext, VHFOPERATIONHANDL
                            HidTransferPacket, VoidInputEventWriteReport);
 }
 
+_Function_class_(EVT_VHF_ASYNC_OPERATION)
+static VOID VoidInputEvtVhfGetFeature(PVOID VhfClientContext, VHFOPERATIONHANDLE VhfOperationHandle,
+                                      PVOID VhfOperationContext, PHID_XFER_PACKET HidTransferPacket)
+{
+    UNREFERENCED_PARAMETER(VhfOperationContext);
+    VoidInputDispatchEvent((PVOIDINPUT_FILE_CONTEXT)VhfClientContext, VhfOperationHandle,
+                           HidTransferPacket, VoidInputEventGetFeature);
+}
+
+_Function_class_(EVT_VHF_ASYNC_OPERATION)
+static VOID VoidInputEvtVhfSetFeature(PVOID VhfClientContext, VHFOPERATIONHANDLE VhfOperationHandle,
+                                      PVOID VhfOperationContext, PHID_XFER_PACKET HidTransferPacket)
+{
+    UNREFERENCED_PARAMETER(VhfOperationContext);
+    VoidInputDispatchEvent((PVOIDINPUT_FILE_CONTEXT)VhfClientContext, VhfOperationHandle,
+                           HidTransferPacket, VoidInputEventSetFeature);
+}
+
 // Dequeue a handed-out op by request id; the caller completes it.
 static WDFOBJECT VoidInputTakeOutstandingById(PVOIDINPUT_FILE_CONTEXT fc, ULONG requestId)
 {
@@ -255,9 +273,15 @@ static NTSTATUS VoidInputDoCreate(PVOIDINPUT_DEVICE_CONTEXT dc,
 
     // Register the VHF output/feature callbacks this type opts into. Mouse and
     // keyboard are input-only (none); the Xbox pad registers write-report for
-    // rumble. (DS4/DS5 add the feature-report callbacks later.)
+    // rumble; DS4/DS5 also register the feature reports for their handshake.
     if (desc->Events & VOIDINPUT_EVT_WRITE_REPORT) {
         fc->VhfConfig.EvtVhfAsyncOperationWriteReport = VoidInputEvtVhfWriteReport;
+    }
+    if (desc->Events & VOIDINPUT_EVT_GET_FEATURE) {
+        fc->VhfConfig.EvtVhfAsyncOperationGetFeature = VoidInputEvtVhfGetFeature;
+    }
+    if (desc->Events & VOIDINPUT_EVT_SET_FEATURE) {
+        fc->VhfConfig.EvtVhfAsyncOperationSetFeature = VoidInputEvtVhfSetFeature;
     }
 
     NTSTATUS status = VhfCreate(&fc->VhfConfig, &fc->VhfHandle);
