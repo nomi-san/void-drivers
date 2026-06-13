@@ -518,6 +518,12 @@ VoidrvInputHandle VoidrvInputCreate(VoidrvInputType type)
         return nullptr;
     }
 
+    // The HID device has just arrived, but the OS opens its input read-pipe a beat
+    // later; reports submitted before that are dropped (VHF has no pending read to
+    // complete). Let it settle so the caller's FIRST report is not lost - otherwise
+    // e.g. the first keystroke after create goes missing. One-time, at creation.
+    Sleep(150);
+
     auto* d = new (std::nothrow) VoidrvInput();   // value-init zeroes the state fields
     if (!d) {
         CloseHandle(h);   // also removes the device
