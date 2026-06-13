@@ -963,6 +963,69 @@ static void PackDs4Pad(const VoidrvPadState* s, uint8_t r[64])
     r[12] = 0xFF;   // battery: wired/full
 }
 
+// Pack a VoidrvPadState into the 64-byte DualSense input report (report id 1).
+// The layout differs from the DualShock 4: the two triggers come right after the
+// sticks, then a sequence byte, then three button bytes. Sticks are 8-bit (0x80
+// centered, Y inverted); face buttons map A=Cross B=Circle X=Square Y=Triangle;
+// the dpad packs into a hat. Gyro/accel/touch are left neutral (a later
+// refinement); a plausible wired-full battery is set.
+static void PackDs5Pad(const VoidrvPadState* s, uint8_t r[64])
+{
+    auto axis8 = [](int16_t v) -> uint8_t {
+        int x = ((int)v + 32768) >> 8;
+        if (x < 0) x = 0; else if (x > 255) x = 255;
+        return (uint8_t)x;
+    };
+    memset(r, 0, 64);
+    r[0] = 0x01;                                   // report id
+    r[1] = axis8(s->ThumbLX);
+    r[2] = (uint8_t)(255 - axis8(s->ThumbLY));     // Y: up = low
+    r[3] = axis8(s->ThumbRX);
+    r[4] = (uint8_t)(255 - axis8(s->ThumbRY));
+    r[5] = s->LeftTrigger;                         // L2 analog
+    r[6] = s->RightTrigger;                        // R2 analog
+    r[7] = 0;                                      // sequence counter (unused)
+
+    uint16_t b = s->Buttons;
+    bool up = (b & VOIDRV_PAD_DPAD_UP)    != 0;
+    bool dn = (b & VOIDRV_PAD_DPAD_DOWN)  != 0;
+    bool lf = (b & VOIDRV_PAD_DPAD_LEFT)  != 0;
+    bool rg = (b & VOIDRV_PAD_DPAD_RIGHT) != 0;
+    uint8_t hat = 8;   // 8 = neutral
+    if      (up && rg) hat = 1;
+    else if (rg && dn) hat = 3;
+    else if (dn && lf) hat = 5;
+    else if (lf && up) hat = 7;
+    else if (up)       hat = 0;
+    else if (rg)       hat = 2;
+    else if (dn)       hat = 4;
+    else if (lf)       hat = 6;
+
+    uint8_t b8 = (uint8_t)(hat & 0x0F);
+    if (b & VOIDRV_PAD_X) b8 |= 0x10;   // Square
+    if (b & VOIDRV_PAD_A) b8 |= 0x20;   // Cross
+    if (b & VOIDRV_PAD_B) b8 |= 0x40;   // Circle
+    if (b & VOIDRV_PAD_Y) b8 |= 0x80;   // Triangle
+    r[8] = b8;
+
+    uint8_t b9 = 0;
+    if (b & VOIDRV_PAD_LSHOULDER) b9 |= 0x01;   // L1
+    if (b & VOIDRV_PAD_RSHOULDER) b9 |= 0x02;   // R1
+    if (s->LeftTrigger  > 0)      b9 |= 0x04;   // L2
+    if (s->RightTrigger > 0)      b9 |= 0x08;   // R2
+    if (b & VOIDRV_PAD_BACK)      b9 |= 0x10;   // Create/Share
+    if (b & VOIDRV_PAD_START)     b9 |= 0x20;   // Options
+    if (b & VOIDRV_PAD_LTHUMB)    b9 |= 0x40;   // L3
+    if (b & VOIDRV_PAD_RTHUMB)    b9 |= 0x80;   // R3
+    r[9] = b9;
+
+    uint8_t b10 = 0;
+    if (b & VOIDRV_PAD_GUIDE) b10 |= 0x01;      // PS button (bit1 touchpad, bit2 mute)
+    r[10] = b10;
+
+    r[53] = 0x2A;   // battery: wired, full (BatteryState 0x2 << 4 | BatteryPercent 0xA)
+}
+
 // DS4 feature-report handshake responses (neutral calibration, firmware id,
 // pairing/MAC). Each array begins with its report id, matching what the OS reads
 // back. Returns the byte count written, or 0 for an unhandled feature report.
@@ -1003,6 +1066,50 @@ static uint32_t BuildDs4Feature(uint8_t reportId, uint8_t* out)
     return 0;                          // unhandled -> empty response
 }
 
+// DualSense feature-report handshake. Same convention as DS4: byte 0 of each
+// response is the report id (the HID stack expects the report-id byte at the head
+// of a numbered feature buffer). Neutral gyro/accel calibration, a plausible
+// firmware-info block, and the pairing report carrying our MAC (reversed).
+static const uint8_t k_Ds5Calibration[] = {
+    0x05,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,         // gyro pitch/yaw/roll bias
+    0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8,  // gyro range
+    0xF4, 0x01, 0xF4, 0x01,                     // gyro speed +/-
+    0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8,  // accel range
+};
+static const uint8_t k_Ds5Firmware[] = {
+    0x20, 0x4A, 0x61, 0x6E, 0x20, 0x32, 0x39, 0x20,
+    0x32, 0x30, 0x32, 0x34, 0x30, 0x39, 0x3A, 0x31,
+    0x33, 0x3A, 0x35, 0x39, 0x02, 0x00, 0x04, 0x00,
+    0x14, 0x04, 0x00, 0x00, 0x0A, 0x00, 0x0C, 0x01,
+    0x51, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x58, 0x04, 0x00, 0x00,
+    0x2A, 0x00, 0x01, 0x00, 0x09, 0x00, 0x02, 0x00,
+    0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static const uint8_t k_Ds5Mac[6] = { 0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F };
+
+static uint32_t BuildDs5Feature(uint8_t reportId, uint8_t* out)
+{
+    if (reportId == 0x05) {            // calibration
+        memcpy(out, k_Ds5Calibration, sizeof(k_Ds5Calibration));
+        return (uint32_t)sizeof(k_Ds5Calibration);
+    }
+    if (reportId == 0x20) {            // firmware info (byte 0 is the report id)
+        memcpy(out, k_Ds5Firmware, sizeof(k_Ds5Firmware));
+        return (uint32_t)sizeof(k_Ds5Firmware);
+    }
+    if (reportId == 0x09) {            // pairing info: id + MAC (reversed) + padding
+        memset(out, 0, 20);
+        out[0] = 0x09;
+        for (int i = 0; i < 6; ++i) {
+            out[1 + i] = k_Ds5Mac[5 - i];
+        }
+        return 20;
+    }
+    return 0;                          // unhandled -> empty response
+}
+
 bool VoidrvInputPadReport(VoidrvInputHandle handle, const VoidrvPadState* state)
 {
     if (!handle || !state || handle->Device == INVALID_HANDLE_VALUE) {
@@ -1016,6 +1123,11 @@ bool VoidrvInputPadReport(VoidrvInputHandle handle, const VoidrvPadState* state)
     if (handle->Type == VOIDRV_INPUT_DS4) {
         uint8_t report[64];
         PackDs4Pad(state, report);
+        return InputWrite(handle->Device, report, sizeof(report));
+    }
+    if (handle->Type == VOIDRV_INPUT_DS5) {
+        uint8_t report[64];
+        PackDs5Pad(state, report);
         return InputWrite(handle->Device, report, sizeof(report));
     }
     return false;
@@ -1069,11 +1181,20 @@ static DWORD WINAPI VoidrvPadEventReader(LPVOID param)
                 if (flags & 0x1) {
                     h->RumbleCb(h->RumbleCtx, ev.Data[4], ev.Data[3], 0, 0);  // left, right
                 }
+            } else if (h->Type == VOIDRV_INPUT_DS5 && ev.DataLength >= 5 && h->RumbleCb) {
+                // Output report id 0x02: ev.Data[0]=id, [1]=flags0, [2]=flags1,
+                // [3]=right motor, [4]=left motor.
+                uint8_t flags0 = ev.Data[1];   // bit0/bit1 = compatible vibration
+                if (flags0 & 0x3) {
+                    h->RumbleCb(h->RumbleCtx, ev.Data[4], ev.Data[3], 0, 0);  // left, right
+                }
             }
         }
         else if (ev.Type == VoidInputEventGetFeature) {
             if (h->Type == VOIDRV_INPUT_DS4) {
                 done.DataLength = BuildDs4Feature(ev.ReportId, done.Data);
+            } else if (h->Type == VOIDRV_INPUT_DS5) {
+                done.DataLength = BuildDs5Feature(ev.ReportId, done.Data);
             }
         }
         // SetFeature (and unhandled GetFeature) just succeed with no data.
