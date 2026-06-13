@@ -684,6 +684,133 @@ static const UCHAR k_DS5ReportDescriptor[] = {
 };
 
 // ---------------------------------------------------------------------------
+// Touch + pen digitizer
+//
+// One device with two top-level collections:
+//   Report id 1 - Touch Screen: up to 10 fingers (tip switch, contact id, X/Y
+//                 over a 0..32767 logical range), a contact count, and a scan
+//                 time. Report id 2 (Feature) reports the maximum contact count
+//                 so Windows enumerates it as a 10-point multitouch screen.
+//   Report id 3 - Pen (integrated stylus): tip/barrel/eraser/invert/in-range
+//                 flags, X/Y, tip pressure (0..1023), and X/Y tilt in degrees.
+// X/Y are absolute over 0..32767 and map onto the associated display (the
+// primary monitor by default), so the host can drive it 1:1 from client
+// coordinates. Input-only apart from the contact-count feature read.
+//
+// Each finger is an identical logical collection; the macro keeps the ten
+// repeats byte-identical. Block comments are required - the backslash line
+// continuations splice before line comments would end.
+// ---------------------------------------------------------------------------
+#define VOIDINPUT_TOUCH_FINGER                                              \
+    0x05, 0x0D,        /*     Usage Page (Digitizer) */                     \
+    0x09, 0x22,        /*     Usage (Finger) */                             \
+    0xA1, 0x02,        /*     Collection (Logical) */                       \
+    0x09, 0x42,        /*       Usage (Tip Switch) */                       \
+    0x15, 0x00,        /*       Logical Minimum (0) */                      \
+    0x25, 0x01,        /*       Logical Maximum (1) */                      \
+    0x75, 0x01,        /*       Report Size (1) */                          \
+    0x95, 0x01,        /*       Report Count (1) */                         \
+    0x81, 0x02,        /*       Input (Data,Var,Abs)   ; tip switch */      \
+    0x09, 0x47,        /*       Usage (Confidence) */                       \
+    0x81, 0x02,        /*       Input (Data,Var,Abs)   ; confidence */      \
+    0x75, 0x06,        /*       Report Size (6) */                          \
+    0x95, 0x01,        /*       Report Count (1) */                         \
+    0x81, 0x03,        /*       Input (Const,Var,Abs)  ; 6-bit pad */       \
+    0x75, 0x08,        /*       Report Size (8) */                          \
+    0x09, 0x51,        /*       Usage (Contact Identifier) */               \
+    0x25, 0x3F,        /*       Logical Maximum (63) */                     \
+    0x95, 0x01,        /*       Report Count (1) */                         \
+    0x81, 0x02,        /*       Input (Data,Var,Abs)   ; contact id */      \
+    0x05, 0x01,        /*       Usage Page (Generic Desktop) */             \
+    0x26, 0xFF, 0x7F,  /*       Logical Maximum (32767) */                  \
+    0x75, 0x10,        /*       Report Size (16) */                         \
+    0x09, 0x30,        /*       Usage (X) */                                \
+    0x81, 0x02,        /*       Input (Data,Var,Abs)   ; X */               \
+    0x09, 0x31,        /*       Usage (Y) */                                \
+    0x81, 0x02,        /*       Input (Data,Var,Abs)   ; Y */               \
+    0xC0               /*     End Collection */
+
+static const UCHAR k_TouchReportDescriptor[] = {
+    0x05, 0x0D,        // Usage Page (Digitizer)
+    0x09, 0x04,        // Usage (Touch Screen)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x01,        //   Report ID (1)
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    VOIDINPUT_TOUCH_FINGER,
+    0x05, 0x0D,        //   Usage Page (Digitizer)
+    0x09, 0x54,        //   Usage (Contact Count)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x0A,        //   Logical Maximum (10)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x02,        //   Input (Data,Var,Abs)        ; contact count
+    0x09, 0x56,        //   Usage (Scan Time)
+    0x27, 0xFF, 0xFF, 0x00, 0x00,  // Logical Maximum (65535)
+    0x75, 0x10,        //   Report Size (16)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x02,        //   Input (Data,Var,Abs)        ; scan time
+    0x85, 0x02,        //   Report ID (2)
+    0x09, 0x55,        //   Usage (Contact Count Maximum)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x0A,        //   Logical Maximum (10)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x01,        //   Report Count (1)
+    0xB1, 0x02,        //   Feature (Data,Var,Abs)      ; max contacts = 10
+    0xC0,              // End Collection
+
+    // ---- Pen (integrated stylus), Report ID 3 ----
+    0x05, 0x0D,        // Usage Page (Digitizer)
+    0x09, 0x02,        // Usage (Pen)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x03,        //   Report ID (3)
+    0x09, 0x20,        //   Usage (Stylus)
+    0xA1, 0x00,        //   Collection (Physical)
+    0x09, 0x42,        //     Usage (Tip Switch)
+    0x09, 0x44,        //     Usage (Barrel Switch)
+    0x09, 0x45,        //     Usage (Eraser)
+    0x09, 0x3C,        //     Usage (Invert)
+    0x09, 0x32,        //     Usage (In Range)
+    0x15, 0x00,        //     Logical Minimum (0)
+    0x25, 0x01,        //     Logical Maximum (1)
+    0x75, 0x01,        //     Report Size (1)
+    0x95, 0x05,        //     Report Count (5)
+    0x81, 0x02,        //     Input (Data,Var,Abs)      ; 5 stylus flags
+    0x95, 0x03,        //     Report Count (3)
+    0x81, 0x03,        //     Input (Const,Var,Abs)     ; 3-bit pad
+    0x05, 0x01,        //     Usage Page (Generic Desktop)
+    0x26, 0xFF, 0x7F,  //     Logical Maximum (32767)
+    0x75, 0x10,        //     Report Size (16)
+    0x95, 0x01,        //     Report Count (1)
+    0x09, 0x30,        //     Usage (X)
+    0x81, 0x02,        //     Input (Data,Var,Abs)      ; X
+    0x09, 0x31,        //     Usage (Y)
+    0x81, 0x02,        //     Input (Data,Var,Abs)      ; Y
+    0x05, 0x0D,        //     Usage Page (Digitizer)
+    0x09, 0x30,        //     Usage (Tip Pressure)
+    0x26, 0xFF, 0x03,  //     Logical Maximum (1023)
+    0x75, 0x10,        //     Report Size (16)
+    0x95, 0x01,        //     Report Count (1)
+    0x81, 0x02,        //     Input (Data,Var,Abs)      ; tip pressure
+    0x09, 0x3D,        //     Usage (X Tilt)
+    0x09, 0x3E,        //     Usage (Y Tilt)
+    0x15, 0xA6,        //     Logical Minimum (-90)
+    0x25, 0x5A,        //     Logical Maximum (90)
+    0x75, 0x08,        //     Report Size (8)
+    0x95, 0x02,        //     Report Count (2)
+    0x81, 0x02,        //     Input (Data,Var,Abs)      ; X/Y tilt (degrees)
+    0xC0,              //   End Collection (Physical)
+    0xC0,              // End Collection (Application)
+};
+
+// ---------------------------------------------------------------------------
 // Registry. Types absent here return NULL from VoidInputGetDeviceDesc and so
 // fail CREATE with STATUS_NOT_SUPPORTED until their milestone lands.
 // ---------------------------------------------------------------------------
@@ -737,6 +864,16 @@ static const VOIDINPUT_DEVICE_DESC k_Devices[] = {
         FALSE,                         // not a singleton (up to 4 pads)
         TRUE,                          // gamepad (counts against the 4-pad cap)
         VOIDINPUT_EVT_WRITE_REPORT | VOIDINPUT_EVT_GET_FEATURE | VOIDINPUT_EVT_SET_FEATURE,
+    },
+    {
+        VoidInputDeviceTouch,
+        0x1FF7, 0x0100, 0x0100,        // generic Void digitizer identity
+        k_TouchReportDescriptor,
+        (USHORT)sizeof(k_TouchReportDescriptor),
+        TRUE,                          // numbered reports (touch 1, feature 2, pen 3)
+        TRUE,                          // singleton
+        FALSE,                         // not a gamepad
+        VOIDINPUT_EVT_GET_FEATURE,     // answers the contact-count-maximum feature read
     },
 };
 
