@@ -480,12 +480,15 @@ struct VoidrvInput {
     uint8_t  KbdModifiers;          // held VOIDRV_KMOD_* mask
     uint8_t  KbdKeys[6];            // held HID key usages (0 = empty)
 
-    // Gamepad force-feedback reader (drains the output-event channel).
+    // Gamepad output/feature event reader (drains the output-event channel).
     VoidrvRumbleCallback RumbleCb;
     void*                RumbleCtx;
     HANDLE               RumbleThread;
     volatile LONG        RumbleStop;
 };
+
+// Pad output/feature event reader (defined below; started for pad handles).
+static DWORD WINAPI VoidrvPadEventReader(LPVOID param);
 
 VoidrvStatus VoidrvInputQueryStatus(void)
 {
@@ -537,6 +540,14 @@ VoidrvInputHandle VoidrvInputCreate(VoidrvInputType type)
     }
     d->Device = h;
     d->Type   = type;
+
+    // Pads need the output/feature reader running from the start: DS4/DS5 answer
+    // feature requests during enumeration, and all pads receive rumble.
+    if (type == VOIDRV_INPUT_XBOXONE || type == VOIDRV_INPUT_DS4 || type == VOIDRV_INPUT_DS5) {
+        d->RumbleStop   = 0;
+        d->RumbleThread = CreateThread(nullptr, 0, VoidrvPadEventReader, d, 0, nullptr);
+        // If the thread fails to start, the device still works for input.
+    }
     return d;
 }
 
@@ -857,19 +868,128 @@ static void PackXboxPad(const VoidrvPadState* s, uint8_t r[17])
     r[16] = 0xFF;   // battery: full
 }
 
-bool VoidrvInputPadReport(VoidrvInputHandle handle, const VoidrvPadState* state)
+// Pack a VoidrvPadState into the 64-byte DualShock 4 input report (report id 1).
+// Sticks are 8-bit (0x80 centered, Y inverted), triggers 8-bit, dpad as a hat,
+// face buttons mapped A=Cross B=Circle X=Square Y=Triangle. Gyro/accel/touch are
+// left neutral (a later refinement).
+static void PackDs4Pad(const VoidrvPadState* s, uint8_t r[64])
 {
-    if (!handle || !state || handle->Type != VOIDRV_INPUT_XBOXONE ||
-        handle->Device == INVALID_HANDLE_VALUE) {
-        return false;
-    }
-    uint8_t report[17];
-    PackXboxPad(state, report);
-    DWORD written = 0;
-    return WriteFile(handle->Device, report, sizeof(report), &written, nullptr) != FALSE;
+    auto axis8 = [](int16_t v) -> uint8_t {
+        int x = ((int)v + 32768) >> 8;
+        if (x < 0) x = 0; else if (x > 255) x = 255;
+        return (uint8_t)x;
+    };
+    memset(r, 0, 64);
+    r[0] = 0x01;                                   // report id
+    r[1] = axis8(s->ThumbLX);
+    r[2] = (uint8_t)(255 - axis8(s->ThumbLY));     // Y: up = low
+    r[3] = axis8(s->ThumbRX);
+    r[4] = (uint8_t)(255 - axis8(s->ThumbRY));
+
+    uint16_t b = s->Buttons;
+    bool up = (b & VOIDRV_PAD_DPAD_UP)    != 0;
+    bool dn = (b & VOIDRV_PAD_DPAD_DOWN)  != 0;
+    bool lf = (b & VOIDRV_PAD_DPAD_LEFT)  != 0;
+    bool rg = (b & VOIDRV_PAD_DPAD_RIGHT) != 0;
+    uint8_t hat = 8;   // 8 = neutral
+    if      (up && rg) hat = 1;
+    else if (rg && dn) hat = 3;
+    else if (dn && lf) hat = 5;
+    else if (lf && up) hat = 7;
+    else if (up)       hat = 0;
+    else if (rg)       hat = 2;
+    else if (dn)       hat = 4;
+    else if (lf)       hat = 6;
+
+    uint8_t b5 = (uint8_t)(hat & 0x0F);
+    if (b & VOIDRV_PAD_X) b5 |= 0x10;   // Square
+    if (b & VOIDRV_PAD_A) b5 |= 0x20;   // Cross
+    if (b & VOIDRV_PAD_B) b5 |= 0x40;   // Circle
+    if (b & VOIDRV_PAD_Y) b5 |= 0x80;   // Triangle
+    r[5] = b5;
+
+    uint8_t b6 = 0;
+    if (b & VOIDRV_PAD_LSHOULDER) b6 |= 0x01;   // L1
+    if (b & VOIDRV_PAD_RSHOULDER) b6 |= 0x02;   // R1
+    if (s->LeftTrigger  > 0)      b6 |= 0x04;   // L2
+    if (s->RightTrigger > 0)      b6 |= 0x08;   // R2
+    if (b & VOIDRV_PAD_BACK)      b6 |= 0x10;   // Share
+    if (b & VOIDRV_PAD_START)     b6 |= 0x20;   // Options
+    if (b & VOIDRV_PAD_LTHUMB)    b6 |= 0x40;   // L3
+    if (b & VOIDRV_PAD_RTHUMB)    b6 |= 0x80;   // R3
+    r[6] = b6;
+
+    if (b & VOIDRV_PAD_GUIDE) r[7] |= 0x01;     // PS button (counter in high bits)
+    r[8] = s->LeftTrigger;
+    r[9] = s->RightTrigger;
+    r[12] = 0xFF;   // battery: wired/full
 }
 
-static DWORD WINAPI VoidrvRumbleThread(LPVOID param)
+// DS4 feature-report handshake responses (neutral calibration, firmware id,
+// pairing/MAC). Each array begins with its report id, matching what the OS reads
+// back. Returns the byte count written, or 0 for an unhandled feature report.
+static const uint8_t k_Ds4Calibration[] = {
+    0x02,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,         // gyro pitch/yaw/roll bias
+    0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8,
+    0xF4, 0x01, 0xF4, 0x01,                     // gyro speed +/-
+    0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8, 0x10, 0x27, 0xF0, 0xD8,
+};
+static const uint8_t k_Ds4Firmware[] = {
+    0xA3, 0x41, 0x75, 0x67, 0x20, 0x20, 0x33, 0x20,
+    0x32, 0x30, 0x31, 0x33, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x30, 0x37, 0x3A, 0x30, 0x31, 0x3A, 0x31,
+    0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0x31, 0x03, 0x00, 0x00,
+    0x00, 0x49, 0x00, 0x05, 0x00, 0x00, 0x80, 0x03, 0x00,
+};
+static const uint8_t k_Ds4Mac[6] = { 0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F };
+
+static uint32_t BuildDs4Feature(uint8_t reportId, uint8_t* out)
+{
+    if (reportId == 0x02) {
+        memcpy(out, k_Ds4Calibration, sizeof(k_Ds4Calibration));
+        return (uint32_t)sizeof(k_Ds4Calibration);
+    }
+    if (reportId == 0xA3) {
+        memcpy(out, k_Ds4Firmware, sizeof(k_Ds4Firmware));
+        return (uint32_t)sizeof(k_Ds4Firmware);
+    }
+    if (reportId == 0x12) {            // pairing info: id + MAC (reversed)
+        out[0] = 0x12;
+        for (int i = 0; i < 6; ++i) {
+            out[1 + i] = k_Ds4Mac[5 - i];
+        }
+        return 7;
+    }
+    return 0;                          // unhandled -> empty response
+}
+
+bool VoidrvInputPadReport(VoidrvInputHandle handle, const VoidrvPadState* state)
+{
+    if (!handle || !state || handle->Device == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD written = 0;
+    if (handle->Type == VOIDRV_INPUT_XBOXONE) {
+        uint8_t report[17];
+        PackXboxPad(state, report);
+        return WriteFile(handle->Device, report, sizeof(report), &written, nullptr) != FALSE;
+    }
+    if (handle->Type == VOIDRV_INPUT_DS4) {
+        uint8_t report[64];
+        PackDs4Pad(state, report);
+        return WriteFile(handle->Device, report, sizeof(report), &written, nullptr) != FALSE;
+    }
+    return false;
+}
+
+// Pad output/feature event reader. Drains the GET_EVENT channel and services
+// each event: output reports -> rumble callback (Xbox or DS4), DS4 GET_FEATURE ->
+// the canned handshake response, everything else -> succeed. Runs for the life of
+// a pad handle (started at create), so DS4/DS5 feature requests are answered even
+// before a rumble callback is set.
+static DWORD WINAPI VoidrvPadEventReader(LPVOID param)
 {
     auto* h = (VoidrvInputHandle)param;
     for (;;) {
@@ -882,18 +1002,35 @@ static DWORD WINAPI VoidrvRumbleThread(LPVOID param)
                              &ev, sizeof(ev), &br, nullptr)) {
             break;   // handle closed / request cancelled
         }
-        if (ev.Type == VoidInputEventWriteReport && ev.DataLength >= 8 && h->RumbleCb) {
-            uint8_t en   = ev.Data[0];
-            uint8_t low  = (en & 0x1) ? ev.Data[3] : 0;   // left  (low-freq) motor
-            uint8_t high = (en & 0x2) ? ev.Data[4] : 0;   // right (high-freq) motor
-            uint8_t lt   = (en & 0x4) ? ev.Data[1] : 0;   // left trigger motor
-            uint8_t rt   = (en & 0x8) ? ev.Data[2] : 0;   // right trigger motor
-            h->RumbleCb(h->RumbleCtx, low, high, lt, rt);
-        }
+
         VOIDINPUT_EVENT_COMPLETE done;
         ZeroMemory(&done, sizeof(done));
         done.RequestId = ev.RequestId;
         done.Status    = 0;
+
+        if (ev.Type == VoidInputEventWriteReport) {
+            if (h->Type == VOIDRV_INPUT_XBOXONE && ev.DataLength >= 8 && h->RumbleCb) {
+                uint8_t en = ev.Data[0];
+                h->RumbleCb(h->RumbleCtx,
+                            (en & 0x1) ? ev.Data[3] : 0,    // left  (low-freq)
+                            (en & 0x2) ? ev.Data[4] : 0,    // right (high-freq)
+                            (en & 0x4) ? ev.Data[1] : 0,    // left trigger
+                            (en & 0x8) ? ev.Data[2] : 0);   // right trigger
+            } else if (h->Type == VOIDRV_INPUT_DS4 && ev.DataLength >= 8 && h->RumbleCb) {
+                // Numbered report: ev.Data[0] = id (5), the report body follows.
+                uint8_t flags = ev.Data[1];   // RumbleValid:1, LedValid:1, ...
+                if (flags & 0x1) {
+                    h->RumbleCb(h->RumbleCtx, ev.Data[4], ev.Data[3], 0, 0);  // left, right
+                }
+            }
+        }
+        else if (ev.Type == VoidInputEventGetFeature) {
+            if (h->Type == VOIDRV_INPUT_DS4) {
+                done.DataLength = BuildDs4Feature(ev.ReportId, done.Data);
+            }
+        }
+        // SetFeature (and unhandled GetFeature) just succeed with no data.
+
         DeviceIoControl(h->Device, IOCTL_VOIDINPUT_COMPLETE_EVENT, &done, sizeof(done),
                         nullptr, 0, &br, nullptr);
     }
@@ -902,16 +1039,15 @@ static DWORD WINAPI VoidrvRumbleThread(LPVOID param)
 
 bool VoidrvInputPadSetRumbleCallback(VoidrvInputHandle handle, VoidrvRumbleCallback callback, void* context)
 {
-    if (!handle || handle->Type != VOIDRV_INPUT_XBOXONE) {
+    if (!handle || (handle->Type != VOIDRV_INPUT_XBOXONE &&
+                    handle->Type != VOIDRV_INPUT_DS4 &&
+                    handle->Type != VOIDRV_INPUT_DS5)) {
         return false;
     }
+    // The event reader is already running (started at create for pads); just set
+    // the callback it invokes.
     handle->RumbleCb  = callback;
     handle->RumbleCtx = context;
-    if (callback && !handle->RumbleThread) {
-        handle->RumbleStop   = 0;
-        handle->RumbleThread = CreateThread(nullptr, 0, VoidrvRumbleThread, handle, 0, nullptr);
-        return handle->RumbleThread != nullptr;
-    }
     return true;
 }
 

@@ -51,8 +51,8 @@ static int Usage()
         "  voidctl kbd type <text...>        (type text into the focused window)\n"
         "  voidctl kbd tap <hidUsage>        (tap one HID usage, hex e.g. 0x04 = 'a')\n"
         "\n"
-        "  voidctl pad demo [seconds]        (animate an Xbox pad; rumble prints)\n"
-        "  voidctl pad hold [seconds]        (hold a fixed state; for joy.cpl/tests)\n");
+        "  voidctl pad demo [xbox|ds4] [s]   (animate a pad; rumble prints)\n"
+        "  voidctl pad hold [xbox|ds4] [s]   (hold a fixed state; for joy.cpl/tests)\n");
     return 1;
 }
 
@@ -420,19 +420,35 @@ static void PadRumbleCb(void*, uint8_t low, uint8_t high, uint8_t lt, uint8_t rt
     std::printf("  rumble: low=%u high=%u ltrig=%u rtrig=%u\n", low, high, lt, rt);
 }
 
+// Optional leading "xbox" / "ds4" token selects the pad type (default Xbox).
+static VoidrvInputType ParsePadType(int* argc, char*** argv)
+{
+    VoidrvInputType type = VOIDRV_INPUT_XBOXONE;
+    if (*argc > 0) {
+        if (std::strcmp((*argv)[0], "ds4") == 0) {
+            type = VOIDRV_INPUT_DS4; ++(*argv); --(*argc);
+        } else if (std::strcmp((*argv)[0], "xbox") == 0 || std::strcmp((*argv)[0], "xboxone") == 0) {
+            ++(*argv); --(*argc);
+        }
+    }
+    return type;
+}
+
 static int CmdPadDemo(int argc, char** argv)
 {
+    VoidrvInputType type = ParsePadType(&argc, &argv);
     int seconds = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : 5;
     if (seconds <= 0) {
         seconds = 5;
     }
-    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_XBOXONE);
+    VoidrvInputHandle h = VoidrvInputCreate(type);
     if (!h) {
         std::printf("error: cannot create gamepad (is VoidInput installed?)\n");
         return 1;
     }
     VoidrvInputPadSetRumbleCallback(h, PadRumbleCb, nullptr);
-    std::printf("xbox pad created; animating for %d s (open joy.cpl to watch; rumble prints)\n", seconds);
+    std::printf("%s pad created; animating for %d s (open joy.cpl to watch; rumble prints)\n",
+                type == VOIDRV_INPUT_DS4 ? "ds4" : "xbox", seconds);
 
     const int hz = 60;
     const int ticks = seconds * hz;
@@ -459,11 +475,12 @@ static int CmdPadDemo(int argc, char** argv)
 
 static int CmdPadHold(int argc, char** argv)
 {
+    VoidrvInputType type = ParsePadType(&argc, &argv);
     int seconds = argc > 0 ? (int)std::strtol(argv[0], nullptr, 10) : 4;
     if (seconds <= 0) {
         seconds = 4;
     }
-    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_XBOXONE);
+    VoidrvInputHandle h = VoidrvInputCreate(type);
     if (!h) {
         std::printf("error: cannot create gamepad\n");
         return 1;
