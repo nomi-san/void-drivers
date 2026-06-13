@@ -98,6 +98,60 @@ static const UCHAR k_MouseReportDescriptor[] = {
 };
 
 // ---------------------------------------------------------------------------
+// Keyboard
+//
+// Two collections selected by report id:
+//   ID 1 - boot keyboard: 8 modifier bits (LCtrl..RGui), a reserved byte, and
+//          six key-code slots (6-key rollover, HID Keyboard/Keypad usages).
+//   ID 2 - consumer control: one 16-bit consumer usage (media/volume keys), 0 = none.
+// Input-only for now (no lock-LED output report); LED feedback arrives with the
+// output-event channel in a later milestone. Report bytes after the id:
+//   keyboard - modifiers(1) + reserved(1) + keys(6) = 8  (9 with the id)
+//   consumer - usage(2)                                  (3 with the id)
+// ---------------------------------------------------------------------------
+static const UCHAR k_KeyboardReportDescriptor[] = {
+    // ---- Boot keyboard (Report ID 1) ----
+    0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x09, 0x06,        // Usage (Keyboard)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x01,        //   Report ID (1)
+    0x05, 0x07,        //   Usage Page (Keyboard/Keypad)
+    0x19, 0xE0,        //   Usage Minimum (Left Control)
+    0x29, 0xE7,        //   Usage Maximum (Right GUI)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x08,        //   Report Count (8)
+    0x81, 0x02,        //   Input (Data,Var,Abs)        ; 8 modifier bits
+    0x95, 0x01,        //   Report Count (1)
+    0x75, 0x08,        //   Report Size (8)
+    0x81, 0x03,        //   Input (Const,Var,Abs)       ; reserved byte
+    0x95, 0x06,        //   Report Count (6)
+    0x75, 0x08,        //   Report Size (8)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+    0x05, 0x07,        //   Usage Page (Keyboard/Keypad)
+    0x19, 0x00,        //   Usage Minimum (0)
+    0x29, 0xFF,        //   Usage Maximum (255)
+    0x81, 0x00,        //   Input (Data,Array)          ; 6 key-code slots
+    0xC0,              // End Collection
+
+    // ---- Consumer control (Report ID 2) ----
+    0x05, 0x0C,        // Usage Page (Consumer)
+    0x09, 0x01,        // Usage (Consumer Control)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x02,        //   Report ID (2)
+    0x19, 0x00,        //   Usage Minimum (0)
+    0x2A, 0x3C, 0x02,  //   Usage Maximum (0x023C)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x26, 0x3C, 0x02,  //   Logical Maximum (0x023C)
+    0x95, 0x01,        //   Report Count (1)
+    0x75, 0x10,        //   Report Size (16)
+    0x81, 0x00,        //   Input (Data,Array)          ; one consumer usage (0 = none)
+    0xC0,              // End Collection
+};
+
+// ---------------------------------------------------------------------------
 // Registry. Types absent here return NULL from VoidInputGetDeviceDesc and so
 // fail CREATE with STATUS_NOT_SUPPORTED until their milestone lands.
 // ---------------------------------------------------------------------------
@@ -111,6 +165,16 @@ static const VOIDINPUT_DEVICE_DESC k_Devices[] = {
         TRUE,                          // singleton
         FALSE,                         // not a gamepad
         VOIDINPUT_EVT_NONE,            // input-only
+    },
+    {
+        VoidInputDeviceKeyboard,
+        0x1A2C, 0x0042, 0x0100,        // generic USB-keyboard identity (override via CREATE)
+        k_KeyboardReportDescriptor,
+        (USHORT)sizeof(k_KeyboardReportDescriptor),
+        TRUE,                          // numbered reports (ids 1 and 2)
+        TRUE,                          // singleton
+        FALSE,                         // not a gamepad
+        VOIDINPUT_EVT_NONE,            // input-only (lock-LED output is a later milestone)
     },
 };
 

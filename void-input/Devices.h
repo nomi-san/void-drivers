@@ -17,6 +17,10 @@
 #define VOIDINPUT_MOUSE_REPORT_RELATIVE 1
 #define VOIDINPUT_MOUSE_REPORT_ABSOLUTE 2
 
+// Keyboard report IDs - boot keyboard (modifiers + 6KRO) and consumer control.
+#define VOIDINPUT_KBD_REPORT_KEYBOARD   1
+#define VOIDINPUT_KBD_REPORT_CONSUMER   2
+
 // Output/feature event kinds a type opts into (mapped to VHF callbacks when the
 // device is created). The mouse is input-only and uses none; the bitmask has
 // room for the gamepad/keyboard milestones.
