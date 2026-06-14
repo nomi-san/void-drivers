@@ -1,0 +1,77 @@
+name: Build drivers
+
+# Cross-builds both UMDF drivers (VoidDisplay, VoidInput) for x64 and ARM64.
+# Build verification only: signed with SignMode=Off (no cert on the runner);
+# release packages are signed separately with the real OV/EV cert.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.configuration }} ${{ matrix.platform }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, ARM64]
+        configuration: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # windows-2025 ships VS2022 (NativeDesktop + x64/ARM64 MSVC) and the Win11
+      # SDK 10.0.26100, but the WDK *content* (driver build targets, UMDF libs,
+      # stampinf/inf2cat) may be absent. Install it only if the targets are missing.
+      - name: Ensure Windows Driver Kit (10.0.26100)
+        shell: pwsh
+        run: |
+          $targets = "${env:ProgramFiles(x86)}\Windows Kits\10\build\10.0.26100.0\WindowsDriver.common.targets"
+          if (Test-Path $targets) {
+            Write-Host "WDK already present: $targets"
+          } else {
+            Write-Host "WDK not found; installing windowsdriverkit11 via Chocolatey..."
+            choco install windowsdriverkit11 --no-progress -y
+            if (-not (Test-Path $targets)) { throw "WDK install did not provide $targets" }
+          }
+
+      - name: Build VoidDisplay + VoidInput (${{ matrix.platform }} / ${{ matrix.configuration }})
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+          # The driver build's InfVerif/SignTool native DLLs only load inside the VS
+          # dev environment, so build from the Dev Shell (matches local recipe).
+          $arch = if ('${{ matrix.platform }}' -eq 'ARM64') { 'arm64' } else { 'x64' }
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation `
+            -DevCmdArguments "-arch=$arch -host_arch=x64" | Out-Null
+
+          $projects = 'void-display\VoidDisplay.vcxproj', 'void-input\VoidInput.vcxproj'
+          foreach ($proj in $projects) {
+            Write-Host "::group::msbuild $proj"
+            msbuild $proj `
+              /p:Configuration=${{ matrix.configuration }} `
+              /p:Platform=${{ matrix.platform }} `
+              /p:SpectreMitigation=false `
+              /p:SignMode=Off `
+              /m /v:minimal /nologo
+            if ($LASTEXITCODE -ne 0) { throw "Build failed: $proj" }
+            Write-Host "::endgroup::"
+          }
+
+      - name: Upload driver binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: void-drivers-${{ matrix.configuration }}-${{ matrix.platform }}
+          path: |
+            void-display/${{ matrix.platform }}/${{ matrix.configuration }}/VoidDisplay/**
+            void-input/${{ matrix.platform }}/${{ matrix.configuration }}/VoidInput/**
+            void-display/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
+            void-input/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
+          if-no-files-found: warn

@@ -12,12 +12,18 @@ PnpLockdown = 1
 DriverVer   = ; stamped by the build (stampinf)
 
 [Manufacturer]
-%ManufacturerName% = Standard, NTamd64.10.0...19041, NTamd64.10.0...22000
+%ManufacturerName% = Standard, NTamd64.10.0...19041, NTamd64.10.0...22000, NTarm64.10.0...19041, NTarm64.10.0...22000
 
 [Standard.NTamd64.10.0...19041]
 %DeviceName% = VoidInput_Win10, Root\Void\Input
 
 [Standard.NTamd64.10.0...22000]
+%DeviceName% = VoidInput_Win11, Root\Void\Input
+
+[Standard.NTarm64.10.0...19041]
+%DeviceName% = VoidInput_Win10, Root\Void\Input
+
+[Standard.NTarm64.10.0...22000]
 %DeviceName% = VoidInput_Win11, Root\Void\Input
 
 [SourceDisksFiles]
