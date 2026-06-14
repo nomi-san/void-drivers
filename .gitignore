@@ -21,6 +21,9 @@ x64/
 ARM64/
 Win32/
 .vs/
+
+# Inno Setup compiled installers (built from installer\VoidDisplay.iss)
+installer/out/
 *.pdb
 *.exp
 *.lib
