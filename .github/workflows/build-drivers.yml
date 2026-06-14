@@ -1,9 +1,8 @@
 name: Build drivers
 
-# Cross-builds both UMDF drivers (VoidDisplay, VoidInput) for x64 and ARM64,
-# Debug and Release, in a single job. InfVerif/ApiValidator are off (flaky in CI)
-# and SignMode=Off (no cert on the runner; release packages are signed separately
-# with the real OV/EV cert).
+# Cross-builds both UMDF drivers (VoidDisplay, VoidInput) for x64 and ARM64, Debug
+# and Release, in one job. InfVerif/ApiValidator off (flaky in CI) and SignMode=Off
+# (no cert on the runner; release packages are signed separately with the real cert).
 
 on:
   push:
@@ -25,10 +24,29 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       # windows-2025 has VS2022 + Win11 SDK 10.0.26100 + the WDK VS extension, but not
-      # the WDK *content* (the wdf\umdf headers/libs like wudfwdm.h). Chocolatey adds it.
-      - name: Install Windows Driver Kit
+      # the WDK *content* (wdf\umdf headers like wudfwdm.h / wdf.h). The choco package
+      # installs the wrong build (22000); install the official WDK 26100 that matches
+      # the runner's SDK 26100.
+      - name: Install WDK 10.0.26100
         shell: pwsh
-        run: choco install windowsdriverkit11 -y --no-progress
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2335869' -OutFile $exe
+          Write-Host "Installing WDK (this downloads the payload)..."
+          $p = Start-Process -FilePath $exe -ArgumentList '/quiet','/norestart','/ceip','off','/features','+' -Wait -PassThru
+          Write-Host "wdksetup exit code: $($p.ExitCode)"
+
+      - name: Diagnose WDK/SDK layout (non-fatal)
+        shell: pwsh
+        run: |
+          $k = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          Write-Host "== Include\<ver> =="
+          Get-ChildItem "$k\Include" -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+          Write-Host "== wdf.h / wudfwdm.h locations =="
+          Get-ChildItem $k -Recurse -Include 'wdf.h','wudfwdm.h' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          Write-Host "== build targets =="
+          Get-ChildItem "$k\build" -Recurse -Filter 'WindowsDriver.common.targets' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
 
       - name: Build all (x64/ARM64 x Debug/Release)
         shell: pwsh
