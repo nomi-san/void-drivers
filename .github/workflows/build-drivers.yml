@@ -24,20 +24,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # windows-2025 ships VS2022 (NativeDesktop + x64/ARM64 MSVC) and the Win11
-      # SDK 10.0.26100, but the WDK *content* (driver build targets, UMDF libs,
-      # stampinf/inf2cat) may be absent. Install it only if the targets are missing.
-      - name: Ensure Windows Driver Kit (10.0.26100)
+      # windows-2025 already ships VS2022 + Win11 SDK 10.0.26100 + the WDK (the driver
+      # build targets are wired through the VS WDK extension), so we build directly -
+      # no WDK install. Print where the WDK/SDK live for debugging (non-fatal).
+      - name: Show toolchain (diagnostic)
         shell: pwsh
         run: |
-          $targets = "${env:ProgramFiles(x86)}\Windows Kits\10\build\10.0.26100.0\WindowsDriver.common.targets"
-          if (Test-Path $targets) {
-            Write-Host "WDK already present: $targets"
-          } else {
-            Write-Host "WDK not found; installing windowsdriverkit11 via Chocolatey..."
-            choco install windowsdriverkit11 --no-progress -y
-            if (-not (Test-Path $targets)) { throw "WDK install did not provide $targets" }
-          }
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          Write-Host "== Windows Kits\10\build version dirs =="
+          Get-ChildItem "$kits\build" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          Write-Host "== WindowsDriver.common.targets locations =="
+          Get-ChildItem "$kits\build" -Recurse -Filter 'WindowsDriver.common.targets' -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "  $($_.FullName)" }
+          Write-Host "== UMDF lib dirs (need 2.25) =="
+          Get-ChildItem "$kits\Lib\wdf\umdf\x64" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
 
       - name: Build VoidDisplay + VoidInput (${{ matrix.platform }} / ${{ matrix.configuration }})
         shell: pwsh
