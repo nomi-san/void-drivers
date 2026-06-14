@@ -176,7 +176,8 @@ NTSTATUS VoidDisplayDeviceD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Previ
 // ---------------------------------------------------------------------------
 _Use_decl_annotations_
 VOID VoidDisplayIoDeviceControl(WDFDEVICE Device, WDFREQUEST Request,
-                                size_t OutputBufferLength, size_t InputBufferLength,
+                                [[maybe_unused]] size_t OutputBufferLength,
+                                [[maybe_unused]] size_t InputBufferLength,
                                 ULONG IoControlCode)
 {
     VOID_LOG("IoDeviceControl code=0x%08X inLen=%Iu outLen=%Iu", IoControlCode,
@@ -278,7 +279,7 @@ NTSTATUS VoidDisplayAdapterInitFinished(IDDCX_ADAPTER AdapterObject,
 
 _Use_decl_annotations_
 NTSTATUS VoidDisplayAdapterCommitModes(IDDCX_ADAPTER AdapterObject,
-                                       const IDARG_IN_COMMITMODES* pInArgs)
+                                       [[maybe_unused]] const IDARG_IN_COMMITMODES* pInArgs)
 {
     UNREFERENCED_PARAMETER(AdapterObject);
     VOID_LOG("AdapterCommitModes PathCount=%u", pInArgs ? pInArgs->PathCount : 0);
@@ -722,7 +723,7 @@ void VoidDisplayDevice::ReplugMonitor(UINT32 index)
 
     // Re-create in the same slot with the refreshed (now larger) mode list.
     WdfWaitLockAcquire(m_Lock, NULL);
-    NTSTATUS status = CreateMonitorLocked(index, mode);
+    [[maybe_unused]] NTSTATUS status = CreateMonitorLocked(index, mode);
     WdfWaitLockRelease(m_Lock);
     VOID_LOG("Replug slot %u %ux%u@%u status=0x%08X",
              index, mode.Width, mode.Height, mode.RefreshHz, status);

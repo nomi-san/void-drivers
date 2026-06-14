@@ -1,8 +1,9 @@
 name: Build drivers
 
-# Cross-builds both UMDF drivers (VoidDisplay, VoidInput) for x64 and ARM64.
-# Build verification only: signed with SignMode=Off (no cert on the runner);
-# release packages are signed separately with the real OV/EV cert.
+# Cross-builds both UMDF drivers (VoidDisplay, VoidInput) for x64 and ARM64,
+# Debug and Release, in a single job. InfVerif/ApiValidator are off (flaky in CI)
+# and SignMode=Off (no cert on the runner; release packages are signed separately
+# with the real OV/EV cert).
 
 on:
   push:
@@ -11,67 +12,57 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: ${{ matrix.configuration }} ${{ matrix.platform }}
     runs-on: windows-2025
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [x64, ARM64]
-        configuration: [Debug, Release]
-
     steps:
       - uses: actions/checkout@v4
 
-      # windows-2025 already ships VS2022 + Win11 SDK 10.0.26100 + the WDK (the driver
-      # build targets are wired through the VS WDK extension), so we build directly -
-      # no WDK install. Print where the WDK/SDK live for debugging (non-fatal).
-      - name: Show toolchain (diagnostic)
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # windows-2025 has VS2022 + Win11 SDK 10.0.26100 + the WDK VS extension, but not
+      # the WDK *content* (the wdf\umdf headers/libs like wudfwdm.h). Chocolatey adds it.
+      - name: Install Windows Driver Kit
+        shell: pwsh
+        run: choco install windowsdriverkit11 -y --no-progress
+
+      - name: Build all (x64/ARM64 x Debug/Release)
         shell: pwsh
         run: |
-          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
-          Write-Host "== Windows Kits\10\build version dirs =="
-          Get-ChildItem "$kits\build" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-          Write-Host "== WindowsDriver.common.targets locations =="
-          Get-ChildItem "$kits\build" -Recurse -Filter 'WindowsDriver.common.targets' -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host "  $($_.FullName)" }
-          Write-Host "== UMDF lib dirs (need 2.25) =="
-          Get-ChildItem "$kits\Lib\wdf\umdf\x64" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-
-      - name: Build VoidDisplay + VoidInput (${{ matrix.platform }} / ${{ matrix.configuration }})
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -property installationPath
-          Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
-          # The driver build's InfVerif/SignTool native DLLs only load inside the VS
-          # dev environment, so build from the Dev Shell (matches local recipe).
-          $arch = if ('${{ matrix.platform }}' -eq 'ARM64') { 'arm64' } else { 'x64' }
-          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation `
-            -DevCmdArguments "-arch=$arch -host_arch=x64" | Out-Null
-
-          $projects = 'void-display\VoidDisplay.vcxproj', 'void-input\VoidInput.vcxproj'
-          foreach ($proj in $projects) {
-            Write-Host "::group::msbuild $proj"
-            msbuild $proj `
-              /p:Configuration=${{ matrix.configuration }} `
-              /p:Platform=${{ matrix.platform }} `
-              /p:SpectreMitigation=false `
-              /p:SignMode=Off `
-              /m /v:minimal /nologo
-            if ($LASTEXITCODE -ne 0) { throw "Build failed: $proj" }
-            Write-Host "::endgroup::"
+          $failed = @()
+          foreach ($plat in 'x64', 'ARM64') {
+            foreach ($cfg in 'Debug', 'Release') {
+              foreach ($proj in 'void-display\VoidDisplay.vcxproj', 'void-input\VoidInput.vcxproj') {
+                Write-Host "::group::$cfg | $plat | $proj"
+                msbuild $proj /m `
+                  /p:Configuration=$cfg `
+                  /p:Platform=$plat `
+                  /p:SpectreMitigation=false `
+                  /p:SignMode=Off `
+                  /p:EnableInfVerif=false `
+                  /p:RunApiValidator=false `
+                  /v:minimal /nologo
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::error::Build failed: $cfg $plat $proj"
+                  $failed += "$cfg/$plat/$proj"
+                }
+                Write-Host "::endgroup::"
+              }
+            }
           }
+          if ($failed.Count -gt 0) { throw ("Builds failed:`n" + ($failed -join "`n")) }
 
       - name: Upload driver binaries
         uses: actions/upload-artifact@v4
         with:
-          name: void-drivers-${{ matrix.configuration }}-${{ matrix.platform }}
+          name: void-drivers
           path: |
-            void-display/${{ matrix.platform }}/${{ matrix.configuration }}/VoidDisplay/**
-            void-input/${{ matrix.platform }}/${{ matrix.configuration }}/VoidInput/**
-            void-display/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
-            void-input/${{ matrix.platform }}/${{ matrix.configuration }}/*.dll
+            void-display/**/*.dll
+            void-display/**/VoidDisplay/**
+            void-input/**/*.dll
+            void-input/**/VoidInput/**
           if-no-files-found: warn
