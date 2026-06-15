@@ -21,6 +21,8 @@ extern "C" {
 
 #define VOIDRV_MAX_DISPLAYS 8
 #define VOIDRV_MAX_MODES    128
+#define VOIDRV_DEVNAME_MAX  32     /* GDI device name buffer, e.g. "\\.\DISPLAY12" */
+#define VOIDRV_DEVPATH_MAX  256    /* monitor device-interface path buffer */
 
 typedef struct VoidrvDisplayMode {
     uint32_t Width;      /* pixels; 0 in an Add request selects the driver default */
@@ -36,6 +38,14 @@ typedef struct VoidrvModeList {
 typedef struct VoidrvDisplayEntry {
     uint32_t          InUse;
     VoidrvDisplayMode Mode;
+
+    /* Windows-side identity of the monitor occupying this slot, resolved by matching
+       its UID (= 0x100 + slot index). Valid only when Attached is nonzero - a slot the
+       driver holds may not yet be attached to the desktop by Windows. */
+    uint32_t          Attached;                  /* nonzero if a GDI monitor was found */
+    int32_t           Uid;                       /* monitor UID (0x100 + slot), or -1 */
+    char              DeviceName[VOIDRV_DEVNAME_MAX];  /* GDI "\\.\DISPLAYn" - VOLATILE across reboots */
+    char              DevicePath[VOIDRV_DEVPATH_MAX];  /* stable device-interface path - pin THIS */
 } VoidrvDisplayEntry;
 
 typedef struct VoidrvDisplayState {
@@ -80,7 +90,9 @@ bool                VoidrvDisplaySetMode(VoidrvDisplayHandle handle, uint32_t in
 bool                VoidrvDisplaySetModeDynamic(VoidrvDisplayHandle handle, uint32_t index,
                                                 const VoidrvDisplayMode* mode);
 
-/* Read the current display table. */
+/* Read the current display table. Each in-use entry is also resolved to its
+   Windows-side identity (DeviceName / DevicePath / Uid) when attached; pin DevicePath
+   for stream-host config (e.g. Sunshine output_name), not the volatile DeviceName. */
 bool                VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state);
 
 /* Add a custom mode to the advertised list (visible in Windows display settings).

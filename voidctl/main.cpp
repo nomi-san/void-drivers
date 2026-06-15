@@ -113,65 +113,6 @@ static int CmdVersion()
     return 0;
 }
 
-// Parse the integer following "UID" in a monitor device-interface path, or -1.
-// e.g. "\\?\DISPLAY#VVD0000#5&abc&UID256#{guid}" -> 256. The UID is the durable
-// per-monitor identifier carried in the device path (and in QueryDisplayConfig's
-// monitorDevicePath), so it survives reboots/replug where \\.\DISPLAYn does not.
-static int ParseMonitorUid(const wchar_t* path)
-{
-    const wchar_t* p = path ? wcsstr(path, L"UID") : nullptr;
-    if (!p) {
-        return -1;
-    }
-    p += 3;
-    if (*p < L'0' || *p > L'9') {
-        return -1;
-    }
-    int uid = 0;
-    while (*p >= L'0' && *p <= L'9') {
-        uid = uid * 10 + (int)(*p - L'0');
-        ++p;
-    }
-    return uid;
-}
-
-// Find the GDI device name (\\.\DISPLAYn) and stable monitor device-interface path
-// for the Void monitor occupying driver slot `slot`, matching it by UID (= 0x100 +
-// slot). Returns false if that slot has no GDI-attached monitor (detached / not
-// added). The device path is the durable identifier; \\.\DISPLAYn is volatile.
-static bool FindVoidMonitorForSlot(uint32_t slot,
-                                   wchar_t* deviceName, int deviceNameCch,
-                                   wchar_t* path, int pathCch)
-{
-    const int wantUid = 0x100 + (int)slot;
-
-    DISPLAY_DEVICEW adapter;
-    ZeroMemory(&adapter, sizeof(adapter));
-    adapter.cb = sizeof(adapter);
-
-    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &adapter, 0); ++i) {
-        if (wcsstr(adapter.DeviceString, L"Void Virtual Display")) {
-            DISPLAY_DEVICEW mon;
-            ZeroMemory(&mon, sizeof(mon));
-            mon.cb = sizeof(mon);
-            for (DWORD j = 0;
-                 EnumDisplayDevicesW(adapter.DeviceName, j, &mon, EDD_GET_DEVICE_INTERFACE_NAME);
-                 ++j) {
-                if (ParseMonitorUid(mon.DeviceID) == wantUid) {
-                    lstrcpynW(deviceName, adapter.DeviceName, deviceNameCch);
-                    lstrcpynW(path, mon.DeviceID, pathCch);
-                    return true;
-                }
-                ZeroMemory(&mon, sizeof(mon));
-                mon.cb = sizeof(mon);
-            }
-        }
-        ZeroMemory(&adapter, sizeof(adapter));
-        adapter.cb = sizeof(adapter);
-    }
-    return false;
-}
-
 static int CmdList()
 {
     VoidrvDisplayHandle h = VoidrvDisplayOpen();
@@ -188,39 +129,20 @@ static int CmdList()
     }
     std::printf("displays in use: %u/%u\n", st.Count, (uint32_t)VOIDRV_MAX_DISPLAYS);
     for (uint32_t i = 0; i < VOIDRV_MAX_DISPLAYS; ++i) {
-        if (!st.Entries[i].InUse) {
+        const VoidrvDisplayEntry* e = &st.Entries[i];
+        if (!e->InUse) {
             continue;
         }
-        std::printf("  [%u] %ux%u@%u\n", i,
-                    st.Entries[i].Mode.Width, st.Entries[i].Mode.Height,
-                    st.Entries[i].Mode.RefreshHz);
-
-        wchar_t deviceName[32];
-        wchar_t path[256];
-        if (FindVoidMonitorForSlot(i, deviceName, ARRAYSIZE(deviceName), path, ARRAYSIZE(path))) {
-            std::printf("   |__ Device: %ls\n", deviceName);
-            std::printf("   |__ Path: %ls\n", path);
+        std::printf("  [%u] %ux%u@%u\n", i, e->Mode.Width, e->Mode.Height, e->Mode.RefreshHz);
+        if (e->Attached) {
+            std::printf("   |__ Device: %s\n", e->DeviceName);
+            std::printf("   |__ Path: %s\n", e->DevicePath);
         } else {
             std::printf("   |__ (not attached to the desktop)\n");
         }
     }
     VoidrvDisplayClose(h);
     return 0;
-}
-
-// Convert a wide device path (pure ASCII in practice) to a narrow UTF-8 string.
-static std::string Narrow(const wchar_t* w)
-{
-    if (!w) {
-        return std::string();
-    }
-    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-    if (n <= 0) {
-        return std::string();
-    }
-    std::string s((size_t)(n - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], n, nullptr, nullptr);
-    return s;
 }
 
 // Print (or patch into sunshine.conf) the stable output_name for a Void slot. The
@@ -232,18 +154,36 @@ static int CmdSunshineConfig(int argc, char** argv)
     uint32_t    slot     = (argc > 0) ? (uint32_t)std::strtoul(argv[0], nullptr, 10) : 0;
     const char* confPath = (argc > 1) ? argv[1] : nullptr;
 
-    wchar_t deviceName[32];
-    wchar_t path[256];
-    if (!FindVoidMonitorForSlot(slot, deviceName, ARRAYSIZE(deviceName), path, ARRAYSIZE(path))) {
+    if (slot >= VOIDRV_MAX_DISPLAYS) {
+        std::printf("error: slot %u out of range (0..%u)\n", slot, VOIDRV_MAX_DISPLAYS - 1);
+        return 1;
+    }
+
+    VoidrvDisplayHandle h = VoidrvDisplayOpen();
+    if (!h) {
+        std::printf("error: cannot open VoidDisplay\n");
+        return 1;
+    }
+    VoidrvDisplayState st;
+    std::memset(&st, 0, sizeof(st));
+    bool listed = VoidrvDisplayList(h, &st);
+    VoidrvDisplayClose(h);
+    if (!listed) {
+        PrintLastError("list failed");
+        return 1;
+    }
+
+    const VoidrvDisplayEntry* e = &st.Entries[slot];
+    if (!e->InUse || !e->Attached || e->DevicePath[0] == '\0') {
         std::printf("error: slot %u has no attached Void monitor - 'display add' it first\n", slot);
         return 1;
     }
-    std::string narrowPath = Narrow(path);
+    std::string narrowPath = e->DevicePath;
 
     if (!confPath) {
         std::printf("# Sunshine output_name for Void display slot %u (stable across reboots):\n", slot);
         std::printf("output_name = %s\n", narrowPath.c_str());
-        std::printf("\n(pin this device path, NOT %ls which Windows renumbers.\n", deviceName);
+        std::printf("\n(pin this device path, NOT %s which Windows renumbers.\n", e->DeviceName);
         std::printf(" pass your sunshine.conf path as a 2nd arg to patch it in place.)\n");
         return 0;
     }

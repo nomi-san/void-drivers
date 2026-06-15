@@ -239,40 +239,84 @@ bool VoidrvDisplayRemove(VoidrvDisplayHandle handle, uint32_t index)
     return ok;
 }
 
-// Apply a mode to the index-th active VoidDisplay monitor via the GDI display
+// Parse the integer after "UID" in a monitor device-interface path, or -1.
+// e.g. "...&UID256#{guid}" -> 256. The UID is 0x100 + driver slot, so it maps a
+// monitor back to the slot that created it - stable across reboots / re-adds, unlike
+// the GDI "\\.\DISPLAYn" ordinal that Windows reassigns.
+static int VoidParseMonitorUid(const wchar_t* path)
+{
+    const wchar_t* p = path ? wcsstr(path, L"UID") : nullptr;
+    if (!p) {
+        return -1;
+    }
+    p += 3;
+    if (*p < L'0' || *p > L'9') {
+        return -1;
+    }
+    int uid = 0;
+    while (*p >= L'0' && *p <= L'9') {
+        uid = uid * 10 + (int)(*p - L'0');
+        ++p;
+    }
+    return uid;
+}
+
+// Find the GDI device name ("\\.\DISPLAYn") and the stable monitor device-interface
+// path for the Void monitor occupying driver slot `slot`, matched by UID (= 0x100 +
+// slot). Either out pointer may be null. Returns false if that slot has no GDI-
+// attached monitor (detached or not added). Identifies Void monitors by the ADAPTER
+// name ("Void Virtual Display Adapter"), NOT the EDID manufacturer - a custom EDID
+// changes the monitor id but not the adapter, so adapter matching stays correct.
+static bool VoidFindMonitorForSlot(uint32_t slot,
+                                   wchar_t* deviceName, int deviceNameCch,
+                                   wchar_t* path, int pathCch)
+{
+    const int wantUid = 0x100 + (int)slot;
+
+    DISPLAY_DEVICEW adapter;
+    ZeroMemory(&adapter, sizeof(adapter));
+    adapter.cb = sizeof(adapter);
+
+    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &adapter, 0); ++i) {
+        if (wcsstr(adapter.DeviceString, L"Void Virtual Display")) {
+            DISPLAY_DEVICEW mon;
+            ZeroMemory(&mon, sizeof(mon));
+            mon.cb = sizeof(mon);
+            for (DWORD j = 0;
+                 EnumDisplayDevicesW(adapter.DeviceName, j, &mon, EDD_GET_DEVICE_INTERFACE_NAME);
+                 ++j) {
+                if (VoidParseMonitorUid(mon.DeviceID) == wantUid) {
+                    if (deviceName) lstrcpynW(deviceName, adapter.DeviceName, deviceNameCch);
+                    if (path)       lstrcpynW(path, mon.DeviceID, pathCch);
+                    return true;
+                }
+                ZeroMemory(&mon, sizeof(mon));
+                mon.cb = sizeof(mon);
+            }
+        }
+        ZeroMemory(&adapter, sizeof(adapter));
+        adapter.cb = sizeof(adapter);
+    }
+    return false;
+}
+
+// Apply a mode to the VoidDisplay monitor on driver slot `index` via the GDI display
 // config. Windows remembers the per-monitor mode in the registry, so the driver's
-// advertised mode is not enough on a re-add - we force the requested mode here.
-// Identifies VoidDisplay GDI devices by the ADAPTER name ("Void Virtual Display
-// Adapter"), NOT the EDID manufacturer - a custom EDID (display.edid) changes the
-// monitor id but not the adapter, so adapter matching stays correct.
-// (Index is matched against active VoidDisplay devices in enumeration order; exact
-//  for the common single-display case.)
+// advertised mode is not enough on a re-add - we force the requested mode here. The
+// slot is resolved to its "\\.\DISPLAYn" by UID (= 0x100 + index), so the right
+// monitor is driven even with multiple displays active (enumeration order does not
+// matter).
 static bool VoidApplyMode(uint32_t index, const VoidrvDisplayMode* mode)
 {
-    WCHAR devices[VOIDRV_MAX_DISPLAYS][32];
-    int count = 0;
-
-    DISPLAY_DEVICEW dd;
-    ZeroMemory(&dd, sizeof(dd));
-    dd.cb = sizeof(dd);
-    for (DWORD i = 0; count < VOIDRV_MAX_DISPLAYS && EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
-        if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) &&
-            wcsstr(dd.DeviceString, L"Void Virtual Display")) {
-            lstrcpynW(devices[count], dd.DeviceName, 32);
-            ++count;
-        }
-        ZeroMemory(&dd, sizeof(dd));
-        dd.cb = sizeof(dd);
-    }
-
-    if (index >= (uint32_t)count) {
-        return false;  // that VoidDisplay isn't active (no GDI device to drive)
+    wchar_t deviceName[VOIDRV_DEVNAME_MAX];
+    if (!VoidFindMonitorForSlot(index, deviceName, ARRAYSIZE(deviceName), nullptr, 0)) {
+        return false;  // that slot has no attached GDI monitor to drive
     }
 
     DEVMODEW dm;
     ZeroMemory(&dm, sizeof(dm));
     dm.dmSize = sizeof(dm);
-    if (!EnumDisplaySettingsW(devices[index], ENUM_CURRENT_SETTINGS, &dm)) {
+    if (!EnumDisplaySettingsW(deviceName, ENUM_CURRENT_SETTINGS, &dm)) {
         return false;
     }
     dm.dmPelsWidth        = mode->Width;
@@ -280,7 +324,7 @@ static bool VoidApplyMode(uint32_t index, const VoidrvDisplayMode* mode)
     dm.dmDisplayFrequency = mode->RefreshHz;
     dm.dmFields           = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
 
-    LONG rc = ChangeDisplaySettingsExW(devices[index], &dm, nullptr, CDS_UPDATEREGISTRY, nullptr);
+    LONG rc = ChangeDisplaySettingsExW(deviceName, &dm, nullptr, CDS_UPDATEREGISTRY, nullptr);
     return rc == DISP_CHANGE_SUCCESSFUL;
 }
 
@@ -363,10 +407,28 @@ bool VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state)
 
     state->Count = wire.Count;
     for (uint32_t i = 0; i < VOIDRV_MAX_DISPLAYS && i < VOIDDISPLAY_MAX_DISPLAYS; ++i) {
-        state->Entries[i].InUse = wire.Entries[i].InUse;
-        state->Entries[i].Mode.Width = wire.Entries[i].Mode.Width;
-        state->Entries[i].Mode.Height = wire.Entries[i].Mode.Height;
-        state->Entries[i].Mode.RefreshHz = wire.Entries[i].Mode.RefreshHz;
+        VoidrvDisplayEntry* e = &state->Entries[i];
+        e->InUse = wire.Entries[i].InUse;
+        e->Mode.Width = wire.Entries[i].Mode.Width;
+        e->Mode.Height = wire.Entries[i].Mode.Height;
+        e->Mode.RefreshHz = wire.Entries[i].Mode.RefreshHz;
+
+        // Resolve the Windows-side identity by UID (= 0x100 + slot). A held slot may
+        // not be attached to the desktop yet, in which case there is no GDI monitor.
+        e->Attached = 0;
+        e->Uid = -1;
+        e->DeviceName[0] = '\0';
+        e->DevicePath[0] = '\0';
+        if (e->InUse) {
+            wchar_t name[VOIDRV_DEVNAME_MAX];
+            wchar_t path[VOIDRV_DEVPATH_MAX];
+            if (VoidFindMonitorForSlot(i, name, ARRAYSIZE(name), path, ARRAYSIZE(path))) {
+                e->Attached = 1;
+                e->Uid = 0x100 + (int32_t)i;
+                WideCharToMultiByte(CP_UTF8, 0, name, -1, e->DeviceName, VOIDRV_DEVNAME_MAX, nullptr, nullptr);
+                WideCharToMultiByte(CP_UTF8, 0, path, -1, e->DevicePath, VOIDRV_DEVPATH_MAX, nullptr, nullptr);
+            }
+        }
     }
     return true;
 }
