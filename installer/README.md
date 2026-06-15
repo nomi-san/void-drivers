@@ -19,14 +19,23 @@ the bundled `devcon.exe`, installs the shared `voidctl` CLI, and optionally puts
 | VoidDisplay package (`.dll`/`.inf`/`.cat`) | `%ProgramFiles%\Void Drivers\display\driver` | component `display` |
 | VoidInput package (`.dll`/`.inf`/`.cat`) | `%ProgramFiles%\Void Drivers\input\driver` | component `input` |
 | `devcon.exe` (OS-native arch) | `%ProgramFiles%\Void Drivers\devcon` | always |
-| `voidctl.exe` (OS-native arch) | `%ProgramData%\.voidrv\bin` | always |
+| `voidctl.exe` (OS-native arch) | `%ProgramFiles%\Void Drivers\bin` | always |
 | `display.ini` (seeded only if absent) | `%ProgramData%\.voidrv` | component `display` |
 | Device nodes `Root\Void\Display` / `Root\Void\Input` | created via `devcon install` | per component |
 
-`%ProgramData%\.voidrv` is created **writable by any logged-in user** so an unelevated
-`voidctl` can persist `display.ini` without a UAC prompt (the driver only reads it, as
-SYSTEM). The `bin` subfolder is re-secured read-only for non-admins (it goes on `PATH`),
-so the bundled `voidctl.exe` can't be hijacked.
+`%ProgramData%\.voidrv` (config only) is created **writable by any logged-in user** so an
+unelevated `voidctl` can persist `display.ini` without a UAC prompt (the driver only reads
+it, as SYSTEM). `voidctl.exe` lives in `%ProgramFiles%\Void Drivers\bin` - admin-only
+writable by default - so the executable on `PATH` can't be hijacked by a non-admin.
+
+## Clean install (single instance)
+
+The installer is a **64-bit** Setup (`SetupArchitecture=x64`) so its `[Code]` can reach
+the 64-bit-only `pnputil` (a 32-bit Setup is WOW64-redirected to `SysWOW64`, where pnputil
+does not exist). On every run, for each selected driver it: removes any existing devnode,
+purges **all** stale DriverStore packages for that INF, then installs fresh - so there is
+always exactly **one devnode and one store package** per driver, no matter how many times
+it is re-run. Uninstall does the same cleanup (and keeps `display.ini`).
 
 ## Layout
 

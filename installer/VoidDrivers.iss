@@ -57,6 +57,12 @@ DefaultDirName={autopf}\Void Drivers
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 PrivilegesRequired=admin
+; Build a 64-bit (x64) Setup so [Code] runs as a 64-bit process: {sys} is the real
+; System32 and the 64-bit-only pnputil.exe is reachable (a 32-bit Setup is WOW64-
+; redirected to SysWOW64, where pnputil does not exist). The x64 Setup runs natively
+; on x64 and under emulation on ARM64; the driver payload is still arch-selected per
+; OS below. (Inno Setup 7 removed EnableFsRedirection in favor of a 64-bit Setup.)
+SetupArchitecture=x64
 ; x64 and ARM64 only - there is no 32-bit x86 driver, so refuse on plain x86.
 ArchitecturesAllowed=x64compatible or arm64
 ArchitecturesInstallIn64BitMode=x64compatible or arm64
@@ -79,13 +85,14 @@ Name: "display"; Description: "VoidDisplay - virtual display adapter"; Types: fu
 Name: "input";   Description: "VoidInput - virtual HID devices (mouse, keyboard, gamepad, touch)"; Types: full
 
 [Tasks]
-Name: "addtopath"; Description: "Add voidctl to PATH (%ProgramData%\.voidrv\bin)"; GroupDescription: "Command-line tools:"
+Name: "addtopath"; Description: "Add voidctl to PATH"; GroupDescription: "Command-line tools:"
 
 [Dirs]
-; Writable by any logged-in user so an UNELEVATED voidctl can persist display.ini
-; with no UAC prompt (the driver only READS it, as SYSTEM). The bin subfolder is
-; re-secured read-only for non-admins in [Code] (HardenBinDir) since it goes on PATH.
-Name: "{commonappdata}\.voidrv"; Permissions: everyone-modify
+; Config folder, writable by any logged-in user so an UNELEVATED voidctl can persist
+; display.ini with no UAC prompt (the driver only READS it, as SYSTEM). voidctl.exe
+; itself lives in {app}\bin (Program Files, admin-only writable), so nothing
+; world-writable lands on PATH - no ACL hardening needed.
+Name: "{commonappdata}\.voidrv"; Permissions: everyone-modify; Components: display
 
 [Files]
 ; ---- VoidDisplay driver (component: display; only the OS-native arch installs) ----
@@ -108,9 +115,9 @@ Source: "{#InpX64}\voidinput.cat";   DestDir: "{app}\input\driver"; Components: 
 Source: "redist\devcon\devcon-arm64.exe"; DestDir: "{app}\devcon"; DestName: "devcon.exe"; Check: PreferArm64Files; Flags: ignoreversion
 Source: "redist\devcon\devcon-x64.exe";   DestDir: "{app}\devcon"; DestName: "devcon.exe"; Check: PreferX64Files;   Flags: ignoreversion
 
-; ---- voidctl CLI -> ProgramData\.voidrv\bin (OS-native arch; shared by both) ----
-Source: "{#CtlArm64}"; DestDir: "{commonappdata}\.voidrv\bin"; Check: PreferArm64Files; Flags: ignoreversion
-Source: "{#CtlX64}";   DestDir: "{commonappdata}\.voidrv\bin"; Check: PreferX64Files;   Flags: ignoreversion
+; ---- voidctl CLI -> {app}\bin (Program Files; OS-native arch; shared by both) ----
+Source: "{#CtlArm64}"; DestDir: "{app}\bin"; Check: PreferArm64Files; Flags: ignoreversion
+Source: "{#CtlX64}";   DestDir: "{app}\bin"; Check: PreferX64Files;   Flags: ignoreversion
 
 ; ---- default display config: seeded only if absent, preserved on upgrade/uninstall ----
 Source: "config\display.ini"; DestDir: "{commonappdata}\.voidrv"; Components: display; Flags: onlyifdoesntexist uninsneveruninstall
@@ -135,7 +142,7 @@ end;
 
 function BinDir: String;
 begin
-  Result := ExpandConstant('{commonappdata}\.voidrv\bin');
+  Result := ExpandConstant('{app}\bin');
 end;
 
 { ---- system PATH (HKLM) add/remove ----------------------------------------- }
@@ -167,46 +174,7 @@ begin
   RegWriteStringValue(HKEY_LOCAL_MACHINE, EnvKey, 'Path', Paths);
 end;
 
-{ ---- re-secure the bin subfolder (it sits under a world-writable parent) ----- }
-procedure HardenBinDir;
-var
-  rc: Integer;
-begin
-  { Break inheritance, then: Users = read/execute, Administrators + SYSTEM = full.
-    Keeps voidctl.exe out of a non-admin's reach even though .voidrv itself is
-    everyone-writable for display.ini. }
-  Exec(ExpandConstant('{sys}\icacls.exe'),
-       '"' + BinDir + '" /inheritance:r' +
-       ' /grant:r "*S-1-5-32-545:(OI)(CI)(RX)"' +
-       ' /grant:r "*S-1-5-32-544:(OI)(CI)(F)"' +
-       ' /grant:r "*S-1-5-18:(OI)(CI)(F)"',
-       '', SW_HIDE, ewWaitUntilTerminated, rc);
-end;
-
-{ ---- driver install via devcon (creates the root devnode + stages to store) -- }
-procedure InstallDriverPkg(Name, InfPath, Hwid: String);
-var
-  devcon: String;
-  rc: Integer;
-begin
-  devcon := ExpandConstant('{app}\devcon\devcon.exe');
-  { Remove any prior devnode first so re-running never stacks duplicates. }
-  Exec(devcon, 'remove ' + Hwid, '', SW_HIDE, ewWaitUntilTerminated, rc);
-  if Exec(devcon, 'install "' + InfPath + '" ' + Hwid, '', SW_HIDE, ewWaitUntilTerminated, rc) then
-  begin
-    if rc = 1 then
-      gNeedRestart := True
-    else if rc <> 0 then
-      MsgBox(Name + ': devcon could not create the device (exit code ' + IntToStr(rc) + ').' + #13#10 +
-             'This usually means the driver catalog is not trusted on this machine' + #13#10 +
-             '(install the signing certificate, or package a signed Release build).' + #13#10 + #13#10 +
-             'Retry manually:  devcon install "' + InfPath + '" ' + Hwid, mbError, MB_OK);
-  end
-  else
-    MsgBox(Name + ': failed to launch devcon.exe.', mbError, MB_OK);
-end;
-
-{ ---- uninstall helpers ------------------------------------------------------ }
+{ ---- devnode + store helpers (shared by clean install and uninstall) -------- }
 procedure RemoveDevnode(Hwid: String);
 var
   devcon: String;
@@ -244,6 +212,31 @@ begin
   DeleteFile(tmp);
 end;
 
+{ ---- clean driver install: drop any existing devnode, purge every old store
+       package for this INF, then install fresh -> exactly one devnode + one
+       store copy, no matter how many times the installer is re-run. ----------- }
+procedure InstallDriverPkg(Name, InfPath, Hwid, OrigInfLower: String);
+var
+  devcon: String;
+  rc: Integer;
+begin
+  devcon := ExpandConstant('{app}\devcon\devcon.exe');
+  Exec(devcon, 'remove ' + Hwid, '', SW_HIDE, ewWaitUntilTerminated, rc);
+  DeleteStorePackage(OrigInfLower);
+  if Exec(devcon, 'install "' + InfPath + '" ' + Hwid, '', SW_HIDE, ewWaitUntilTerminated, rc) then
+  begin
+    if rc = 1 then
+      gNeedRestart := True
+    else if rc <> 0 then
+      MsgBox(Name + ': devcon could not create the device (exit code ' + IntToStr(rc) + ').' + #13#10 +
+             'This usually means the driver catalog is not trusted on this machine' + #13#10 +
+             '(install the signing certificate, or package a signed Release build).' + #13#10 + #13#10 +
+             'Retry manually:  devcon install "' + InfPath + '" ' + Hwid, mbError, MB_OK);
+  end
+  else
+    MsgBox(Name + ': failed to launch devcon.exe.', mbError, MB_OK);
+end;
+
 { ---- Inno event hooks ------------------------------------------------------- }
 function NeedRestart: Boolean;
 begin
@@ -265,11 +258,10 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    HardenBinDir;
     if WizardIsComponentSelected('display') then
-      InstallDriverPkg('VoidDisplay', ExpandConstant('{app}\display\driver\VoidDisplay.inf'), '{#HwidDisplay}');
+      InstallDriverPkg('VoidDisplay', ExpandConstant('{app}\display\driver\VoidDisplay.inf'), '{#HwidDisplay}', 'voiddisplay.inf');
     if WizardIsComponentSelected('input') then
-      InstallDriverPkg('VoidInput', ExpandConstant('{app}\input\driver\VoidInput.inf'), '{#HwidInput}');
+      InstallDriverPkg('VoidInput', ExpandConstant('{app}\input\driver\VoidInput.inf'), '{#HwidInput}', 'voidinput.inf');
     if WizardIsTaskSelected('addtopath') then
       EnvAddPath(BinDir);
   end;
