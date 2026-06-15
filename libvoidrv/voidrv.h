@@ -119,7 +119,8 @@ typedef enum VoidrvInputType {
 #define VOIDRV_MB_X1      0x08
 #define VOIDRV_MB_X2      0x10
 
-/* Keyboard modifier bitmask (matches HID usages 0xE0..0xE7). */
+/* Keyboard modifier bitmask (matches HID usages 0xE0..0xE7). These are the ONLY
+   keyboard modifiers - Caps/Num/Scroll Lock are NOT modifiers (see below). */
 #define VOIDRV_KMOD_LCTRL   0x01
 #define VOIDRV_KMOD_LSHIFT  0x02
 #define VOIDRV_KMOD_LALT    0x04
@@ -128,6 +129,14 @@ typedef enum VoidrvInputType {
 #define VOIDRV_KMOD_RSHIFT  0x20
 #define VOIDRV_KMOD_RALT    0x40
 #define VOIDRV_KMOD_RGUI    0x80
+
+/* Lock keys (HID Keyboard/Keypad usages). These are toggle KEYS, not modifiers:
+   there is no "caps is on" bit in a HID report - the host's own lock toggle decides
+   the case of a replayed key. Press them like any key to flip the host toggle, or
+   use VoidrvInputKeyboardSyncLocks to reconcile to a desired state. */
+#define VOIDRV_KEY_CAPSLOCK    0x39
+#define VOIDRV_KEY_SCROLLLOCK  0x47
+#define VOIDRV_KEY_NUMLOCK     0x53
 
 /* Opaque per-device handle. Each handle owns exactly one virtual device; the
    device exists until the handle is closed. */
@@ -199,6 +208,17 @@ bool              VoidrvInputConsumer(VoidrvInputHandle handle, uint16_t usage);
 
 /* Release all held buttons / keys and emit a cleared report. */
 bool              VoidrvInputReset(VoidrvInputHandle handle);
+
+/* Reconcile the host's lock state to the desired caps/num/scroll, tapping each
+   lock key only when the host's current toggle differs (read via GetKeyState).
+   The host lock state - not any report bit - decides the case of a replayed key
+   and whether the keypad emits digits, so a host replaying scancodes should call
+   this from the client's lock-state snapshot (e.g. Parsec's MOD_CAPS/MOD_NUM) to
+   keep cased text and keypad input correct. Requires a keyboard handle. Reads are
+   most reliable from a message-pumping thread; returns true if the host state
+   matched the request on the (best-effort) re-read. */
+bool              VoidrvInputKeyboardSyncLocks(VoidrvInputHandle handle,
+                                               bool caps, bool num, bool scroll);
 
 /* ---- Gamepad (Xbox One) ---- */
 

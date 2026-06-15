@@ -51,6 +51,8 @@ static int Usage()
         "\n"
         "  voidctl kbd type <text...>        (type text into the focused window)\n"
         "  voidctl kbd tap <hidUsage>        (tap one HID usage, hex e.g. 0x04 = 'a')\n"
+        "  voidctl kbd locks <caps> <num> <scroll>  (sync host lock toggles, 0|1 each)\n"
+        "  voidctl kbd lockstate             (print host caps/num/scroll toggle state)\n"
         "\n"
         "  voidctl pad demo [xbox|ds4|ds5] [s]   (animate a pad; rumble prints)\n"
         "  voidctl pad hold [xbox|ds4|ds5] [s]   (hold a fixed state; for joy.cpl/tests)\n"
@@ -657,6 +659,40 @@ static int CmdPenDemo(int argc, char** argv)
     return 0;
 }
 
+// ---- keyboard lock state ----
+
+static int CmdKbdLockState()
+{
+    auto st = [](int vk) { return (GetKeyState(vk) & 1) ? 1 : 0; };
+    std::printf("caps=%d num=%d scroll=%d\n", st(VK_CAPITAL), st(VK_NUMLOCK), st(VK_SCROLL));
+    return 0;
+}
+
+static int CmdKbdLocks(int argc, char** argv)
+{
+    if (argc < 3) {
+        std::printf("usage: voidctl kbd locks <caps 0|1> <num 0|1> <scroll 0|1>\n");
+        return 2;
+    }
+    bool caps = std::strtol(argv[0], nullptr, 10) != 0;
+    bool num  = std::strtol(argv[1], nullptr, 10) != 0;
+    bool scr  = std::strtol(argv[2], nullptr, 10) != 0;
+    VoidrvInputHandle h = VoidrvInputCreate(VOIDRV_INPUT_KEYBOARD);
+    if (!h) {
+        std::printf("error: cannot create keyboard (is VoidInput installed?)\n");
+        return 1;
+    }
+    auto st = [](int vk) { return (GetKeyState(vk) & 1) ? 1 : 0; };
+    std::printf("before: caps=%d num=%d scroll=%d\n", st(VK_CAPITAL), st(VK_NUMLOCK), st(VK_SCROLL));
+    bool ok = VoidrvInputKeyboardSyncLocks(h, caps, num, scr);
+    Sleep(60);
+    std::printf("after:  caps=%d num=%d scroll=%d  (want caps=%d num=%d scroll=%d, sync %s)\n",
+                st(VK_CAPITAL), st(VK_NUMLOCK), st(VK_SCROLL),
+                (int)caps, (int)num, (int)scr, ok ? "ok" : "MISMATCH");
+    VoidrvInputClose(h);
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3) {
@@ -681,6 +717,8 @@ int main(int argc, char** argv)
         else if (std::strcmp(cmd, "version") == 0) return CmdMouseVersion();
         else if (std::strcmp(cmd, "type")    == 0) return CmdKbdType(rest_argc, rest_argv);
         else if (std::strcmp(cmd, "tap")     == 0) return CmdKbdTap(rest_argc, rest_argv);
+        else if (std::strcmp(cmd, "locks")     == 0) return CmdKbdLocks(rest_argc, rest_argv);
+        else if (std::strcmp(cmd, "lockstate") == 0) return CmdKbdLockState();
         return Usage();
     }
 

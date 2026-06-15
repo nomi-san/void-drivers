@@ -873,6 +873,39 @@ bool VoidrvInputReset(VoidrvInputHandle handle)
     return false;
 }
 
+bool VoidrvInputKeyboardSyncLocks(VoidrvInputHandle handle, bool caps, bool num, bool scroll)
+{
+    if (!handle || handle->Type != VOIDRV_INPUT_KEYBOARD ||
+        handle->Device == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    struct { int Vk; uint16_t Usage; bool Want; } locks[3] = {
+        { VK_CAPITAL, VOIDRV_KEY_CAPSLOCK,   caps   },
+        { VK_NUMLOCK, VOIDRV_KEY_NUMLOCK,    num    },
+        { VK_SCROLL,  VOIDRV_KEY_SCROLLLOCK, scroll },
+    };
+    bool allOk = true;
+    for (int i = 0; i < 3; ++i) {
+        // Re-read the host toggle each pass and tap only while it STILL differs,
+        // so we never double-toggle: a tap whose key-down edge lands in a freshly
+        // created device's report-drop window simply gets retried after a longer
+        // settle. Reuses the held-state-aware key path so other held keys/modifiers
+        // survive. Bounded so a permanently-stale read (a non-message-pumping
+        // caller) cannot spin - and the even cap nets zero net change in that case.
+        bool cur = (GetKeyState(locks[i].Vk) & 1) != 0;
+        for (int attempt = 0; attempt < 4 && cur != locks[i].Want; ++attempt) {
+            VoidrvInputKey(handle, locks[i].Usage, true);
+            VoidrvInputKey(handle, locks[i].Usage, false);
+            Sleep(40 + attempt * 40);   // grow the settle to outlast the pipe-open race
+            cur = (GetKeyState(locks[i].Vk) & 1) != 0;
+        }
+        if (cur != locks[i].Want) {
+            allOk = false;
+        }
+    }
+    return allOk;
+}
+
 // ---- gamepad ----
 
 // Pack a VoidrvPadState into the 17-byte Xbox One HID report (no report id).
