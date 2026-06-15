@@ -1,8 +1,9 @@
 name: Build drivers
 
-# Cross-builds both UMDF drivers (VoidDisplay, VoidInput) for x64 and ARM64, Debug
-# and Release, in one job. InfVerif/ApiValidator off (flaky in CI) and SignMode=Off
-# (no cert on the runner; release packages are signed separately with the real cert).
+# Cross-builds the whole suite - both UMDF drivers (VoidDisplay, VoidInput), the SDK
+# (libvoidrv) and the CLI (voidctl) - for x64 and ARM64, Release only, in one job.
+# InfVerif/ApiValidator off (flaky in CI) and SignMode=Off (no cert on the runner;
+# release packages are signed separately with the real cert).
 
 on:
   push:
@@ -52,39 +53,46 @@ jobs:
           Write-Host "== build targets =="
           Get-ChildItem "$k\build" -Recurse -Filter 'WindowsDriver.common.targets' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
 
-      - name: Build all (x64/ARM64 x Debug/Release)
+      - name: Build all (x64/ARM64, Release)
         shell: pwsh
         run: |
           $failed = @()
+          # Drivers first, then SDK, then CLI (voidctl references libvoidrv). The driver-
+          # only props (SignMode/InfVerif/ApiValidator) are harmless no-ops for the SDK/CLI.
+          $projects = @(
+            'void-display\VoidDisplay.vcxproj',
+            'void-input\VoidInput.vcxproj',
+            'libvoidrv\libvoidrv.vcxproj',
+            'voidctl\voidctl.vcxproj'
+          )
           foreach ($plat in 'x64', 'ARM64') {
-            foreach ($cfg in 'Debug', 'Release') {
-              foreach ($proj in 'void-display\VoidDisplay.vcxproj', 'void-input\VoidInput.vcxproj') {
-                Write-Host "::group::$cfg | $plat | $proj"
-                msbuild $proj /m `
-                  /p:Configuration=$cfg `
-                  /p:Platform=$plat `
-                  /p:SpectreMitigation=false `
-                  /p:SignMode=Off `
-                  /p:EnableInfVerif=false `
-                  /p:RunApiValidator=false `
-                  /v:minimal /nologo
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::error::Build failed: $cfg $plat $proj"
-                  $failed += "$cfg/$plat/$proj"
-                }
-                Write-Host "::endgroup::"
+            foreach ($proj in $projects) {
+              Write-Host "::group::Release | $plat | $proj"
+              msbuild $proj /m `
+                /p:Configuration=Release `
+                /p:Platform=$plat `
+                /p:SpectreMitigation=false `
+                /p:SignMode=Off `
+                /p:EnableInfVerif=false `
+                /p:RunApiValidator=false `
+                /v:minimal /nologo
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::error::Build failed: Release $plat $proj"
+                $failed += "Release/$plat/$proj"
               }
+              Write-Host "::endgroup::"
             }
           }
           if ($failed.Count -gt 0) { throw ("Builds failed:`n" + ($failed -join "`n")) }
 
-      - name: Upload driver binaries
+      - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: void-drivers
+          name: void-binaries
           path: |
             void-display/**/*.dll
             void-display/**/VoidDisplay/**
             void-input/**/*.dll
             void-input/**/VoidInput/**
+            voidctl/**/Release/voidctl.exe
           if-no-files-found: warn
