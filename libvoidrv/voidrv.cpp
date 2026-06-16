@@ -185,6 +185,9 @@ uint32_t VoidrvDisplayVersion(VoidrvDisplayHandle handle)
 
 static bool VoidApplyMode(uint32_t index, const VoidrvDisplayMode* mode);
 static void PersistDisplay(uint32_t index, const VoidrvDisplayMode* mode, bool present);
+static bool VoidFindMonitorForSlot(uint32_t slot, wchar_t* deviceName, int deviceNameCch,
+                                   wchar_t* path, int pathCch);
+static bool VoidReadCurrentMode(const wchar_t* deviceName, VoidrvDisplayMode* out);
 
 int VoidrvDisplayAdd(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
 {
@@ -204,23 +207,34 @@ int VoidrvDisplayAdd(VoidrvDisplayHandle handle, const VoidrvDisplayMode* mode)
         return -1;
     }
 
-    // If the display auto-activates, force the requested mode over whatever the OS
-    // remembered for this monitor identity. Best-effort: poll briefly for it to go
-    // active (it does nothing if the display stays inactive).
+    VoidrvDisplayMode eff = { 1920, 1080, 60 };  // fallback if the monitor never attaches
     if (mode && mode->Width && mode->Height && mode->RefreshHz) {
+        // Explicit mode: force it over whatever the OS remembered for this monitor
+        // identity. Best-effort: poll briefly for the display to go active (no-op if it
+        // stays inactive). Persist the requested mode - it is authoritative.
+        eff = *mode;
         for (int tries = 0; tries < 10; ++tries) {
             if (VoidApplyMode((uint32_t)index, mode)) {
                 break;
             }
             Sleep(150);
         }
-    }
-
-    // Persist for restore-on-start. Record the effective mode (the driver's
-    // default when the request was zeroed).
-    VoidrvDisplayMode eff = { 1920, 1080, 60 };
-    if (mode && mode->Width && mode->Height && mode->RefreshHz) {
-        eff = *mode;
+    } else {
+        // Default add: do NOT force a mode. Windows restores the per-monitor mode it
+        // remembers in the registry (its last-used mode for this monitor identity), so
+        // poll for the monitor to attach and persist the mode Windows ACTUALLY applied -
+        // not a guessed 1920x1080@60 that would make display.ini disagree with the panel.
+        wchar_t name[VOIDRV_DEVNAME_MAX];
+        for (int tries = 0; tries < 10; ++tries) {
+            if (VoidFindMonitorForSlot((uint32_t)index, name, ARRAYSIZE(name), nullptr, 0)) {
+                VoidrvDisplayMode actual;
+                if (VoidReadCurrentMode(name, &actual) && actual.Width && actual.Height) {
+                    eff = actual;
+                }
+                break;
+            }
+            Sleep(150);
+        }
     }
     PersistDisplay((uint32_t)index, &eff, true);
     return (int)index;
@@ -298,6 +312,23 @@ static bool VoidFindMonitorForSlot(uint32_t slot,
         adapter.cb = sizeof(adapter);
     }
     return false;
+}
+
+// Read the ACTUAL current mode of a GDI display ("\\.\DISPLAYn") - what is on the
+// panel right now, which may differ from the driver-advertised mode because Windows
+// restores its registry-remembered per-monitor mode on monitor arrival.
+static bool VoidReadCurrentMode(const wchar_t* deviceName, VoidrvDisplayMode* out)
+{
+    DEVMODEW dm;
+    ZeroMemory(&dm, sizeof(dm));
+    dm.dmSize = sizeof(dm);
+    if (!EnumDisplaySettingsW(deviceName, ENUM_CURRENT_SETTINGS, &dm)) {
+        return false;
+    }
+    out->Width     = dm.dmPelsWidth;
+    out->Height    = dm.dmPelsHeight;
+    out->RefreshHz = dm.dmDisplayFrequency;
+    return true;
 }
 
 // Apply a mode to the VoidDisplay monitor on driver slot `index` via the GDI display
@@ -427,6 +458,14 @@ bool VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state)
                 e->Uid = 0x100 + (int32_t)i;
                 WideCharToMultiByte(CP_UTF8, 0, name, -1, e->DeviceName, VOIDRV_DEVNAME_MAX, nullptr, nullptr);
                 WideCharToMultiByte(CP_UTF8, 0, path, -1, e->DevicePath, VOIDRV_DEVPATH_MAX, nullptr, nullptr);
+
+                // Report the mode Windows actually applied, not the driver-advertised
+                // one - the OS may have restored a different per-monitor mode from its
+                // registry, so the driver's stored mode can disagree with the panel.
+                VoidrvDisplayMode actual;
+                if (VoidReadCurrentMode(name, &actual) && actual.Width && actual.Height) {
+                    e->Mode = actual;
+                }
             }
         }
     }

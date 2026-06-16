@@ -92,7 +92,10 @@ bool                VoidrvDisplaySetModeDynamic(VoidrvDisplayHandle handle, uint
 
 /* Read the current display table. Each in-use entry is also resolved to its
    Windows-side identity (DeviceName / DevicePath / Uid) when attached; pin DevicePath
-   for stream-host config (e.g. Sunshine output_name), not the volatile DeviceName. */
+   for stream-host config (e.g. Sunshine output_name), not the volatile DeviceName.
+   For an attached entry, Mode is the mode Windows ACTUALLY applied (it can restore a
+   remembered per-monitor mode that differs from the driver-advertised one); for an
+   unattached entry, Mode is the driver-advertised mode. */
 bool                VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state);
 
 /* Add a custom mode to the advertised list (visible in Windows display settings).
