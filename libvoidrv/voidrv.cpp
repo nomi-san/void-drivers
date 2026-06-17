@@ -397,8 +397,13 @@ static DWORD VoidReadEdid(const wchar_t* instanceId, BYTE* buf, DWORD bufLen)
 // Sunshine matches against output_name. It is UUIDv5 (SHA-1, null namespace) over the
 // EDID bytes plus the STABLE parts of the monitor instance id - the hardware id and the
 // adapter-tied id (before the 2nd '&') and the target id (from the 3rd '&' on), DROPPING
-// the rotating counter between them that changes on driver reinstall. Falls back to
-// hashing the device path (UTF-16) when EDID/instance id are unavailable.
+// the rotating counter between them that changes on driver reinstall. Replicated to match
+// the wire bytes exactly (verified against a running Sunshine's logged buffer):
+//   - the instance id is UPPERCASED (SetupAPI returns the canonical upper-case form, e.g.
+//     "15ECD195", even though the device path is lower-case),
+//   - a trailing NUL wchar is appended (Sunshine's instance_id.size() counts the
+//     terminator, so it ends up in the hash).
+// Falls back to hashing the device path (UTF-16) when EDID/instance id are unavailable.
 static bool VoidComputeDeviceGuid(const wchar_t* devicePath, char* out, int outCch)
 {
     if (outCch < (int)VOIDRV_DEVGUID_MAX) {
@@ -410,6 +415,13 @@ static bool VoidComputeDeviceGuid(const wchar_t* devicePath, char* out, int outC
     bool    built = false;
 
     if (VoidPathToInstanceId(devicePath, instanceId, ARRAYSIZE(instanceId))) {
+        DWORD edidLen = VoidReadEdid(instanceId, edid, sizeof(edid));  // registry is case-insensitive
+        // Match SetupAPI's canonical upper-case instance id (ASCII; '&' positions unchanged).
+        for (wchar_t* q = instanceId; *q; ++q) {
+            if (*q >= L'a' && *q <= L'z') {
+                *q = (wchar_t)(*q - 0x20);
+            }
+        }
         int amp2 = -1, amp3 = -1, count = 0;
         for (int i = 0; instanceId[i]; ++i) {
             if (instanceId[i] == L'&') {
@@ -423,14 +435,15 @@ static bool VoidComputeDeviceGuid(const wchar_t* devicePath, char* out, int outC
             }
         }
         if (amp2 >= 0 && amp3 >= 0) {
-            DWORD edidLen = VoidReadEdid(instanceId, edid, sizeof(edid));
             const BYTE* s1 = (const BYTE*)instanceId;
             ULONG s1len = (ULONG)amp2 * sizeof(wchar_t);              // [0 .. 2nd '&')
             const BYTE* s2 = (const BYTE*)(instanceId + amp3);
             ULONG s2len = (ULONG)((int)wcslen(instanceId) - amp3) * sizeof(wchar_t);  // [3rd '&' .. end)
+            static const BYTE nul2[2] = { 0, 0 };
             name.insert(name.end(), edid, edid + edidLen);
             name.insert(name.end(), s1, s1 + s1len);
             name.insert(name.end(), s2, s2 + s2len);
+            name.insert(name.end(), nul2, nul2 + 2);                 // trailing NUL wchar
             built = true;
         }
     }
