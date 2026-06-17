@@ -32,7 +32,11 @@
     <ClInclude Include="Config.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="VoidDisplay.inf" />
+    <!-- Tier 10 targets Win10 1607 / Server 2016, whose in-box IddCx is 1.0 - it needs the
+         IddCx0100 extension; tiers 12/14 use IddCx0102. Both INFs share everything else and
+         use the $UMDFVERSION$ token so stampinf stamps UmdfLibraryVersion per tier. -->
+    <Inf Include="VoidDisplay.inf" Condition="'$(IddTier)'!='10'" />
+    <Inf Include="VoidDisplay-idd10.inf" Condition="'$(IddTier)'=='10'" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A1B2C3D4-E5F6-47A8-9B0C-1D2E3F405162}</ProjectGuid>
@@ -42,6 +46,24 @@
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <RootNamespace>VoidDisplay</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <!-- IddCx/UMDF tier selector. Default 14 (IddCx 1.4 / UMDF 2.25 -> Win10 1903 / Server 2022+).
+       Build older-OS variants with /p:IddTier=12 (IddCx 1.2 / UMDF 2.19 -> Win10 1709 / Server 2019+)
+       or /p:IddTier=10 (IddCx 1.0 / UMDF 2.15 -> Win10 1607 / Server 2016+). Tiers < 14 drop the 1.4
+       render-adapter pin (compiled out via VOID_IDD_TIER) and write to a suffixed output dir. The INF
+       UmdfLibraryVersion follows UMDF_VERSION_MINOR via the $UMDFVERSION$ token (stampinf). -->
+  <PropertyGroup Label="IddTier">
+    <IddTier Condition="'$(IddTier)'==''">14</IddTier>
+    <VoidIddMinor Condition="'$(IddTier)'=='14'">4</VoidIddMinor>
+    <VoidIddMinReq Condition="'$(IddTier)'=='14'">3</VoidIddMinReq>
+    <VoidUmdfMinor Condition="'$(IddTier)'=='14'">25</VoidUmdfMinor>
+    <VoidIddMinor Condition="'$(IddTier)'=='12'">2</VoidIddMinor>
+    <VoidIddMinReq Condition="'$(IddTier)'=='12'">2</VoidIddMinReq>
+    <VoidUmdfMinor Condition="'$(IddTier)'=='12'">19</VoidUmdfMinor>
+    <VoidIddMinor Condition="'$(IddTier)'=='10'">0</VoidIddMinor>
+    <VoidIddMinReq Condition="'$(IddTier)'=='10'">0</VoidIddMinReq>
+    <VoidUmdfMinor Condition="'$(IddTier)'=='10'">15</VoidUmdfMinor>
+    <IddTierSuffix Condition="'$(IddTier)'!='14'">_Idd$(IddTier)</IddTierSuffix>
   </PropertyGroup>
   <!-- Configuration-only conditions: x64 and ARM64 share the same settings. -->
   <PropertyGroup Label="PropertySheets" Condition="'$(Configuration)'=='Debug'">
@@ -59,23 +81,28 @@
     <TargetVersion>Windows10</TargetVersion>
     <UseDebugLibraries>true</UseDebugLibraries>
     <UMDF_VERSION_MAJOR>2</UMDF_VERSION_MAJOR>
-    <UMDF_VERSION_MINOR>25</UMDF_VERSION_MINOR>
+    <UMDF_VERSION_MINOR>$(VoidUmdfMinor)</UMDF_VERSION_MINOR>
     <IndirectDisplayDriver>true</IndirectDisplayDriver>
     <IDDCX_VERSION_MAJOR>1</IDDCX_VERSION_MAJOR>
-    <IDDCX_VERSION_MINOR>4</IDDCX_VERSION_MINOR>
+    <IDDCX_VERSION_MINOR>$(VoidIddMinor)</IDDCX_VERSION_MINOR>
     <SpectreMitigation>false</SpectreMitigation>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
     <TargetVersion>Windows10</TargetVersion>
     <UseDebugLibraries>false</UseDebugLibraries>
     <UMDF_VERSION_MAJOR>2</UMDF_VERSION_MAJOR>
-    <UMDF_VERSION_MINOR>25</UMDF_VERSION_MINOR>
+    <UMDF_VERSION_MINOR>$(VoidUmdfMinor)</UMDF_VERSION_MINOR>
     <IndirectDisplayDriver>true</IndirectDisplayDriver>
     <IDDCX_VERSION_MAJOR>1</IDDCX_VERSION_MAJOR>
-    <IDDCX_VERSION_MINOR>4</IDDCX_VERSION_MINOR>
+    <IDDCX_VERSION_MINOR>$(VoidIddMinor)</IDDCX_VERSION_MINOR>
     <SpectreMitigation>false</SpectreMitigation>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <!-- Older-OS tiers get a suffixed output dir so they do not clobber the default tier-14 build. -->
+  <PropertyGroup Condition="'$(IddTierSuffix)'!=''" Label="TierOutput">
+    <OutDir>$(ProjectDir)$(Platform)\$(Configuration)$(IddTierSuffix)\</OutDir>
+    <IntDir>$(ProjectDir)$(Platform)\$(Configuration)$(IddTierSuffix)\</IntDir>
+  </PropertyGroup>
   <ImportGroup Label="ExtensionSettings" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -92,7 +119,7 @@
       <WppEnabled>false</WppEnabled>
       <ExceptionHandling>Async</ExceptionHandling>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <AdditionalOptions>/DUMDF_DRIVER /DIDDCX_VERSION_MAJOR=1 /DIDDCX_VERSION_MINOR=4 /DIDDCX_MINIMUM_VERSION_REQUIRED=3 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/DUMDF_DRIVER /DIDDCX_VERSION_MAJOR=1 /DIDDCX_VERSION_MINOR=$(VoidIddMinor) /DIDDCX_MINIMUM_VERSION_REQUIRED=$(VoidIddMinReq) /DVOID_IDD_TIER=$(IddTier) %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(WindowsSdkDir)Include\$(WindowsTargetPlatformVersion)\um\iddcx\$(IDDCX_VERSION_MAJOR).$(IDDCX_VERSION_MINOR);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
@@ -107,7 +134,7 @@
       <WppEnabled>false</WppEnabled>
       <ExceptionHandling>Async</ExceptionHandling>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <AdditionalOptions>/DUMDF_DRIVER /DIDDCX_VERSION_MAJOR=1 /DIDDCX_VERSION_MINOR=4 /DIDDCX_MINIMUM_VERSION_REQUIRED=3 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/DUMDF_DRIVER /DIDDCX_VERSION_MAJOR=1 /DIDDCX_VERSION_MINOR=$(VoidIddMinor) /DIDDCX_MINIMUM_VERSION_REQUIRED=$(VoidIddMinReq) /DVOID_IDD_TIER=$(IddTier) %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(WindowsSdkDir)Include\$(WindowsTargetPlatformVersion)\um\iddcx\$(IDDCX_VERSION_MAJOR).$(IDDCX_VERSION_MINOR);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>

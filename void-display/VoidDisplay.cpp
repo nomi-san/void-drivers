@@ -37,7 +37,7 @@ static void FillTargetMode(IDDCX_TARGET_MODE& m, const VOID_MODE_DESC& d)
 // 0x10DE = NVIDIA, 0x1002 = AMD, 0x8086 = Intel).
 // Returns true and fills outLuid if a matching adapter is found.
 // ---------------------------------------------------------------------------
-static bool VoidResolveRenderAdapterLuid(LUID* outLuid)
+[[maybe_unused]] static bool VoidResolveRenderAdapterLuid(LUID* outLuid)  // unused when VOID_IDD_TIER < 14
 {
     DWORD vendorId = VoidIniUInt(L"render", L"PreferredAdapterVendorId", 0);
     if (vendorId == 0) {
@@ -471,6 +471,10 @@ void VoidDisplayDevice::FinishInit(IDDCX_ADAPTER adapter)
 
     // Pin the render/parent GPU if configured. Best done before any monitor is
     // added (monitors are created on-demand via IOCTL, so here is the right spot).
+    // IddCxAdapterSetRenderAdapter is an IddCx 1.4 DDI - its symbols do not exist in
+    // the <=1.2 headers, so older-OS tiers (VOID_IDD_TIER < 14) compile it out. Those
+    // OSes (Win10 < 1903) have no 1.4 IddCx to pin against anyway.
+#if !defined(VOID_IDD_TIER) || VOID_IDD_TIER >= 14
     LUID luid = {};
     if (VoidResolveRenderAdapterLuid(&luid) &&
         IDD_IS_FUNCTION_AVAILABLE(IddCxAdapterSetRenderAdapter)) {
@@ -479,6 +483,7 @@ void VoidDisplayDevice::FinishInit(IDDCX_ADAPTER adapter)
         IddCxAdapterSetRenderAdapter(m_Adapter, &in);
         VOID_LOG("Pinned render adapter");
     }
+#endif
 
     // Hardware cursor: on by default. With a hardware-cursor plane the OS draws the
     // pointer as an overlay instead of compositing it into the captured frames, so

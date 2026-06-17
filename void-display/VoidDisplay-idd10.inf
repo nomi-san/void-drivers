@@ -1,5 +1,10 @@
 ;
-; VoidDisplay.inf - Void Virtual Display Adapter (IddCx UMDF)
+; VoidDisplay-idd10.inf - Void Virtual Display Adapter (IddCx UMDF), legacy tier.
+;
+; Identical to VoidDisplay.inf EXCEPT UmdfExtensions = IddCx0100 (vs IddCx0102), for the
+; IddTier=10 build that targets Win10 1607 / Server 2016, whose in-box IddCx is 1.0.
+; Keep in sync with VoidDisplay.inf; the only intended difference is the UmdfExtensions line.
+; UmdfLibraryVersion uses the $UMDFVERSION$ token (stampinf stamps it from UMDF_VERSION_MINOR).
 ;
 
 [Version]
@@ -52,7 +57,7 @@ UmdfHostProcessSharing   = ProcessSharingDisabled
 [VoidDisplay_Install_Section]
 UmdfLibraryVersion = $UMDFVERSION$
 ServiceBinary      = %12%\UMDF\VoidDisplay.dll
-UmdfExtensions     = IddCx0102
+UmdfExtensions     = IddCx0100
 AddReg             = VoidDisplay_Parameters_AddReg
 
 ; Driver Parameters (WUDF service key). Operators may edit these post-install.
