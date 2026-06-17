@@ -23,6 +23,7 @@ extern "C" {
 #define VOIDRV_MAX_MODES    128
 #define VOIDRV_DEVNAME_MAX  32     /* GDI device name buffer, e.g. "\\.\DISPLAY12" */
 #define VOIDRV_DEVPATH_MAX  256    /* monitor device-interface path buffer */
+#define VOIDRV_DEVGUID_MAX  40     /* "{8-4-4-4-12}" device-id GUID buffer */
 
 typedef struct VoidrvDisplayMode {
     uint32_t Width;      /* pixels; 0 in an Add request selects the driver default */
@@ -45,7 +46,8 @@ typedef struct VoidrvDisplayEntry {
     uint32_t          Attached;                  /* nonzero if a GDI monitor was found */
     int32_t           Uid;                       /* monitor UID (0x100 + slot), or -1 */
     char              DeviceName[VOIDRV_DEVNAME_MAX];  /* GDI "\\.\DISPLAYn" - VOLATILE across reboots */
-    char              DevicePath[VOIDRV_DEVPATH_MAX];  /* stable device-interface path - pin THIS */
+    char              DevicePath[VOIDRV_DEVPATH_MAX];  /* stable device-interface path */
+    char              DeviceGuid[VOIDRV_DEVGUID_MAX];  /* Sunshine output_name device-id (see below) */
 } VoidrvDisplayEntry;
 
 typedef struct VoidrvDisplayState {
@@ -91,8 +93,11 @@ bool                VoidrvDisplaySetModeDynamic(VoidrvDisplayHandle handle, uint
                                                 const VoidrvDisplayMode* mode);
 
 /* Read the current display table. Each in-use entry is also resolved to its
-   Windows-side identity (DeviceName / DevicePath / Uid) when attached; pin DevicePath
-   for stream-host config (e.g. Sunshine output_name), not the volatile DeviceName.
+   Windows-side identity (DeviceName / DevicePath / Uid / DeviceGuid) when attached.
+   DeviceGuid is the Sunshine/libdisplaydevice "device id" (a UUIDv5 of the EDID plus
+   the stable parts of the monitor instance id) - this is what a recent Sunshine wants
+   in output_name, and it survives reboots and driver reinstalls. DeviceName is the
+   volatile GDI "\\.\DISPLAYn"; DevicePath is the raw device-interface path.
    For an attached entry, Mode is the mode Windows ACTUALLY applied (it can restore a
    remembered per-monitor mode that differs from the driver-advertised one); for an
    unattached entry, Mode is the driver-advertised mode. */

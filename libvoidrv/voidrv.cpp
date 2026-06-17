@@ -4,7 +4,9 @@
 #include <winioctl.h>
 #include <setupapi.h>
 #include <cfgmgr32.h>
+#include <bcrypt.h>
 #include <new>
+#include <vector>
 #include <wchar.h>
 #include <stdio.h>
 
@@ -28,6 +30,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_VOIDINPUT,
 #pragma comment(lib, "cfgmgr32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 struct VoidrvDisplay {
     HANDLE Device;
@@ -331,6 +334,129 @@ static bool VoidReadCurrentMode(const wchar_t* deviceName, VoidrvDisplayMode* ou
     return true;
 }
 
+// SHA-1 of a buffer via CNG. Returns false on any failure.
+static bool VoidSha1(const BYTE* data, ULONG len, BYTE out[20])
+{
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA1_ALGORITHM, nullptr, 0) != 0) {
+        return false;
+    }
+    bool ok = false;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    if (BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
+        if (BCryptHashData(hash, (PUCHAR)data, len, 0) == 0 &&
+            BCryptFinishHash(hash, out, 20, 0) == 0) {
+            ok = true;
+        }
+        BCryptDestroyHash(hash);
+    }
+    BCryptCloseAlgorithmProvider(alg, 0);
+    return ok;
+}
+
+// Convert a monitor device-interface path to its PnP instance id:
+//   \\?\DISPLAY#VVD00A1#1&15ecd195&3&UID256#{guid} -> DISPLAY\VVD00A1\1&15ecd195&3&UID256
+static bool VoidPathToInstanceId(const wchar_t* path, wchar_t* out, int outCch)
+{
+    if (!path) {
+        return false;
+    }
+    const wchar_t* p = path;
+    if (wcsncmp(p, L"\\\\?\\", 4) == 0) {
+        p += 4;
+    }
+    const wchar_t* end = wcsstr(p, L"#{");
+    int n = end ? (int)(end - p) : (int)wcslen(p);
+    if (n <= 0 || n >= outCch) {
+        return false;
+    }
+    for (int i = 0; i < n; ++i) {
+        out[i] = (p[i] == L'#') ? L'\\' : p[i];
+    }
+    out[n] = L'\0';
+    return true;
+}
+
+// Read a monitor's EDID from the PnP Enum registry for an instance id. Returns bytes read (0 on miss).
+static DWORD VoidReadEdid(const wchar_t* instanceId, BYTE* buf, DWORD bufLen)
+{
+    wchar_t key[600];
+    swprintf_s(key, ARRAYSIZE(key),
+               L"SYSTEM\\CurrentControlSet\\Enum\\%s\\Device Parameters", instanceId);
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &h) != ERROR_SUCCESS) {
+        return 0;
+    }
+    DWORD type = 0, len = bufLen;
+    LSTATUS rc = RegQueryValueExW(h, L"EDID", nullptr, &type, buf, &len);
+    RegCloseKey(h);
+    return (rc == ERROR_SUCCESS && type == REG_BINARY) ? len : 0;
+}
+
+// Compute the Sunshine/libdisplaydevice "device id" for a monitor, the value a recent
+// Sunshine matches against output_name. It is UUIDv5 (SHA-1, null namespace) over the
+// EDID bytes plus the STABLE parts of the monitor instance id - the hardware id and the
+// adapter-tied id (before the 2nd '&') and the target id (from the 3rd '&' on), DROPPING
+// the rotating counter between them that changes on driver reinstall. Falls back to
+// hashing the device path (UTF-16) when EDID/instance id are unavailable.
+static bool VoidComputeDeviceGuid(const wchar_t* devicePath, char* out, int outCch)
+{
+    if (outCch < (int)VOIDRV_DEVGUID_MAX) {
+        return false;
+    }
+    std::vector<BYTE> name;
+    wchar_t instanceId[256];
+    BYTE    edid[512];
+    bool    built = false;
+
+    if (VoidPathToInstanceId(devicePath, instanceId, ARRAYSIZE(instanceId))) {
+        int amp2 = -1, amp3 = -1, count = 0;
+        for (int i = 0; instanceId[i]; ++i) {
+            if (instanceId[i] == L'&') {
+                ++count;
+                if (count == 2) {
+                    amp2 = i;
+                } else if (count == 3) {
+                    amp3 = i;
+                    break;
+                }
+            }
+        }
+        if (amp2 >= 0 && amp3 >= 0) {
+            DWORD edidLen = VoidReadEdid(instanceId, edid, sizeof(edid));
+            const BYTE* s1 = (const BYTE*)instanceId;
+            ULONG s1len = (ULONG)amp2 * sizeof(wchar_t);              // [0 .. 2nd '&')
+            const BYTE* s2 = (const BYTE*)(instanceId + amp3);
+            ULONG s2len = (ULONG)((int)wcslen(instanceId) - amp3) * sizeof(wchar_t);  // [3rd '&' .. end)
+            name.insert(name.end(), edid, edid + edidLen);
+            name.insert(name.end(), s1, s1 + s1len);
+            name.insert(name.end(), s2, s2 + s2len);
+            built = true;
+        }
+    }
+    if (!built) {
+        const BYTE* p = (const BYTE*)devicePath;
+        name.insert(name.end(), p, p + (size_t)wcslen(devicePath) * sizeof(wchar_t));
+    }
+
+    // UUIDv5: SHA-1 of (null namespace = 16 zero bytes) || name.
+    std::vector<BYTE> buf(16, 0);
+    buf.insert(buf.end(), name.begin(), name.end());
+    BYTE digest[20];
+    if (!VoidSha1(buf.data(), (ULONG)buf.size(), digest)) {
+        return false;
+    }
+    BYTE u[16];
+    memcpy(u, digest, 16);
+    u[6] = (BYTE)((u[6] & 0x0F) | 0x50);  // version 5
+    u[8] = (BYTE)((u[8] & 0x3F) | 0x80);  // RFC 4122 variant
+    sprintf_s(out, outCch,
+              "{%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
+              u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7],
+              u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
+    return true;
+}
+
 // Apply a mode to the VoidDisplay monitor on driver slot `index` via the GDI display
 // config. Windows remembers the per-monitor mode in the registry, so the driver's
 // advertised mode is not enough on a re-add - we force the requested mode here. The
@@ -450,6 +576,7 @@ bool VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state)
         e->Uid = -1;
         e->DeviceName[0] = '\0';
         e->DevicePath[0] = '\0';
+        e->DeviceGuid[0] = '\0';
         if (e->InUse) {
             wchar_t name[VOIDRV_DEVNAME_MAX];
             wchar_t path[VOIDRV_DEVPATH_MAX];
@@ -458,6 +585,7 @@ bool VoidrvDisplayList(VoidrvDisplayHandle handle, VoidrvDisplayState* state)
                 e->Uid = 0x100 + (int32_t)i;
                 WideCharToMultiByte(CP_UTF8, 0, name, -1, e->DeviceName, VOIDRV_DEVNAME_MAX, nullptr, nullptr);
                 WideCharToMultiByte(CP_UTF8, 0, path, -1, e->DevicePath, VOIDRV_DEVPATH_MAX, nullptr, nullptr);
+                VoidComputeDeviceGuid(path, e->DeviceGuid, VOIDRV_DEVGUID_MAX);
 
                 // Report the mode Windows actually applied, not the driver-advertised
                 // one - the OS may have restored a different per-monitor mode from its

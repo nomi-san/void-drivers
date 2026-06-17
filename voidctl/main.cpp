@@ -137,6 +137,7 @@ static int CmdList()
         if (e->Attached) {
             std::printf("   |__ Device: %s\n", e->DeviceName);
             std::printf("   |__ Path: %s\n", e->DevicePath);
+            std::printf("   |__ GUID: %s\n", e->DeviceGuid);
         } else {
             std::printf("   |__ (not attached to the desktop)\n");
         }
@@ -174,16 +175,19 @@ static int CmdSunshineConfig(int argc, char** argv)
     }
 
     const VoidrvDisplayEntry* e = &st.Entries[slot];
-    if (!e->InUse || !e->Attached || e->DevicePath[0] == '\0') {
+    if (!e->InUse || !e->Attached || e->DeviceGuid[0] == '\0') {
         std::printf("error: slot %u has no attached Void monitor - 'display add' it first\n", slot);
         return 1;
     }
-    std::string narrowPath = e->DevicePath;
+    // Sunshine matches output_name against its device-id GUID (a UUIDv5 of the EDID +
+    // stable instance-id parts), not the GDI name or raw path. The GUID is stable across
+    // reboots AND driver reinstalls; emit it.
+    std::string guid = e->DeviceGuid;
 
     if (!confPath) {
-        std::printf("# Sunshine output_name for Void display slot %u (stable across reboots):\n", slot);
-        std::printf("output_name = %s\n", narrowPath.c_str());
-        std::printf("\n(pin this device path, NOT %s which Windows renumbers.\n", e->DeviceName);
+        std::printf("# Sunshine output_name for Void display slot %u (stable across reboots + reinstalls):\n", slot);
+        std::printf("output_name = %s\n", guid.c_str());
+        std::printf("\n(device path for reference: %s\n", e->DevicePath);
         std::printf(" pass your sunshine.conf path as a 2nd arg to patch it in place.)\n");
         return 0;
     }
@@ -203,7 +207,7 @@ static int CmdSunshineConfig(int argc, char** argv)
                      (s + 11 >= line.size() || line[s + 11] == ' ' ||
                       line[s + 11] == '\t' || line[s + 11] == '=');
         if (isKey) {
-            lines.push_back("output_name = " + narrowPath);
+            lines.push_back("output_name = " + guid);
             replaced = true;
         } else {
             lines.push_back(line);
@@ -211,7 +215,7 @@ static int CmdSunshineConfig(int argc, char** argv)
     }
     in.close();
     if (!replaced) {
-        lines.push_back("output_name = " + narrowPath);
+        lines.push_back("output_name = " + guid);
     }
 
     std::ofstream out(confPath, std::ios::trunc);
@@ -223,7 +227,7 @@ static int CmdSunshineConfig(int argc, char** argv)
         out << l << "\n";
     }
     std::printf("patched %s: output_name = %s (%s)\n",
-                confPath, narrowPath.c_str(), replaced ? "replaced" : "appended");
+                confPath, guid.c_str(), replaced ? "replaced" : "appended");
     return 0;
 }
 
