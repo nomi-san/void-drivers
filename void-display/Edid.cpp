@@ -65,6 +65,29 @@ void VoidBuildEdid(UINT8 out[VOIDDISPLAY_EDID_SIZE], UINT32 serial)
     out[VOIDDISPLAY_EDID_SIZE - 1] = (UINT8)((256 - (sum & 0xFF)) & 0xFF);
 }
 
+bool VoidEdidSlotFromDescription(const UINT8* edid, UINT32 size, UINT32* outSlot)
+{
+    if (edid == nullptr || outSlot == nullptr || size < VOIDDISPLAY_EDID_SIZE) {
+        return false;
+    }
+
+    UINT32 serial = (UINT32)edid[12]
+                  | ((UINT32)edid[13] << 8)
+                  | ((UINT32)edid[14] << 16)
+                  | ((UINT32)edid[15] << 24);
+
+    // Reject anything outside the range we mint. A cloned real-monitor EDID
+    // (UseCustomEdid with PatchSerial=0) carries the panel's own serial and lands
+    // here - correctly, because that panel's own preferred timing should win.
+    if (serial < VOID_EDID_SERIAL_BASE ||
+        serial >= VOID_EDID_SERIAL_BASE + VOIDDISPLAY_MAX_DISPLAYS) {
+        return false;
+    }
+
+    *outSlot = serial - VOID_EDID_SERIAL_BASE;
+    return true;
+}
+
 static bool BlockChecksumOk(const UINT8* block)
 {
     UINT8 sum = 0;

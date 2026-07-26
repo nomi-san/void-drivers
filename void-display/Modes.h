@@ -63,7 +63,23 @@ unsigned VoidModesCount(void);
  * mode). Used to decide whether a live monitor must re-plug to expose a new mode. */
 bool VoidModesContains(UINT32 width, UINT32 height, UINT32 hz);
 
-/* Seed the custom-mode store from the SDK-persisted list in the driver's WUDF
- * service Parameters key (REG_BINARY of packed {w, h, hz} triples). Call once at
- * adapter init, before the first monitor arrives. No-op if nothing is persisted. */
+/* Seed the custom-mode store from the SDK-persisted list in display.ini
+ * ([modes] Custom = WxH@Hz, ...). Call once at adapter init, before the first
+ * monitor arrives. No-op if nothing is persisted. */
 void VoidModesLoadPersisted(void);
+
+/*
+ * Per-slot preferred mode - which advertised mode a monitor should come up on.
+ *
+ * EvtIddCxParseMonitorDescription receives a monitor DESCRIPTION and nothing
+ * else: no monitor object, no context. So a slot that wants to arrive on
+ * something other than the built-in default has to leave word here first.
+ * CreateMonitorLocked publishes before IddCxMonitorCreate; the callback recovers
+ * the slot from the EDID serial (VoidEdidSlotFromDescription) and reads it back.
+ *
+ * A slot with nothing published - or one whose mode is not in the advertised
+ * list - falls back to index 0, the built-in 1920x1080@60.
+ */
+void VoidModesSetPreferred(UINT32 slot, UINT32 width, UINT32 height, UINT32 hz);
+void VoidModesClearPreferred(UINT32 slot);
+bool VoidModesGetPreferred(UINT32 slot, VOID_MODE_DESC* out);
