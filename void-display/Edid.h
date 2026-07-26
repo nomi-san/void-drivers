@@ -12,11 +12,31 @@
 #pragma once
 
 #include <windows.h>
+#include "Public.h"   // VOIDDISPLAY_MAX_DISPLAYS
 
 #define VOIDDISPLAY_EDID_SIZE 128
 #define VOIDDISPLAY_EDID_MAX  256   // base block + one CTA extension
 
+/*
+ * Base of the per-slot serial written to EDID bytes 12-15 (serial = base + slot).
+ * Distinct serials stop the OS collapsing several virtual monitors into one, and
+ * they double as the only way to tell WHICH monitor a description belongs to -
+ * see VoidEdidSlotFromDescription.
+ */
+#define VOID_EDID_SERIAL_BASE 0x56564400u
+
 void VoidBuildEdid(UINT8 out[VOIDDISPLAY_EDID_SIZE], UINT32 serial);
+
+/*
+ * Recover the slot index from an EDID this driver generated.
+ *
+ * EvtIddCxParseMonitorDescription is handed a description and nothing else - no
+ * monitor object, no context - so the serial is the only channel back to the slot
+ * that created it. Returns false when the block is too short or its serial is not
+ * one of ours, which is the normal case for an operator-supplied display.edid
+ * with PatchSerial=0. Callers fall back to the built-in default mode.
+ */
+bool VoidEdidSlotFromDescription(const UINT8* edid, UINT32 size, UINT32* outSlot);
 
 /*
  * Load an operator-supplied EDID from C:\ProgramData\voidrv\display.edid (a dumped

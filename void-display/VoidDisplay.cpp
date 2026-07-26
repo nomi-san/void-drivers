@@ -305,7 +305,29 @@ NTSTATUS VoidDisplayParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTI
     for (unsigned i = 0; i < count; ++i) {
         FillMonitorMode(pInArgs->pMonitorModes[i], modes[i]);
     }
-    pOutArgs->PreferredMonitorModeIdx = 0;
+
+    // Preferred mode: index 0 (the built-in 1920x1080@60) unless this monitor's
+    // slot published something else. There is no monitor context here, so the
+    // slot is recovered from the per-slot serial in the EDID we generated; an
+    // EDID we did not mint, or a mode that is not advertised, keeps index 0.
+    unsigned preferred = 0;
+    UINT32   slot      = 0;
+    VOID_MODE_DESC want{};
+    if (VoidEdidSlotFromDescription(static_cast<const UINT8*>(pInArgs->MonitorDescription.pData),
+                                    pInArgs->MonitorDescription.DataSize, &slot) &&
+        VoidModesGetPreferred(slot, &want)) {
+        for (unsigned i = 0; i < count; ++i) {
+            if (modes[i].Width == want.Width &&
+                modes[i].Height == want.Height &&
+                modes[i].RefreshHz == want.RefreshHz) {
+                preferred = i;
+                break;
+            }
+        }
+        VOID_LOG("ParseMonitorDescription slot %u prefers %ux%u@%u -> idx %u",
+                 slot, want.Width, want.Height, want.RefreshHz, preferred);
+    }
+    pOutArgs->PreferredMonitorModeIdx = preferred;
     return STATUS_SUCCESS;
 }
 
@@ -508,8 +530,15 @@ NTSTATUS VoidDisplayDevice::CreateMonitorLocked(UINT32 index, const VOIDDISPLAY_
     // valid, otherwise the built-in VVD template. Serial is per-slot so monitors
     // are distinct ("VVD" + slot).
     UINT8  edid[VOIDDISPLAY_EDID_MAX];
-    UINT32 serial   = 0x56564400u + index;
+    UINT32 serial   = VOID_EDID_SERIAL_BASE + index;
     UINT32 edidSize = 0;
+
+    // Publish the slot's mode BEFORE IddCxMonitorCreate: the OS runs
+    // ParseMonitorDescription during creation, and that is where the preferred
+    // mode is chosen. Without this the monitor always arrives on the built-in
+    // default no matter what mode the ADD asked for.
+    VoidModesSetPreferred(index, mode.Width, mode.Height, mode.RefreshHz);
+
     if (VoidIniUInt(L"edid", L"UseCustomEdid", 0) != 0) {
         edidSize = VoidLoadCustomEdid(edid, serial, VoidIniUInt(L"edid", L"PatchSerial", 1) != 0);
         if (edidSize != 0) {
@@ -634,6 +663,10 @@ NTSTATUS VoidDisplayDevice::RemoveMonitor(UINT32 index)
     if (monitor) {
         IddCxMonitorDeparture(monitor);
     }
+    // Drop the published preferred mode with the monitor, so a later ADD that
+    // leaves the mode zeroed gets the built-in default rather than inheriting
+    // whatever the previous occupant of this slot asked for.
+    VoidModesClearPreferred(index);
     VOID_LOG("Monitor removed slot %u", index);
     return STATUS_SUCCESS;
 }
@@ -653,6 +686,12 @@ NTSTATUS VoidDisplayDevice::SetMode(UINT32 index, const VOIDDISPLAY_MODE& mode)
         status = STATUS_SUCCESS;
     }
     WdfWaitLockRelease(m_Lock);
+
+    // Keep the published preferred mode in step with the slot, so a later
+    // re-plug brings the monitor back on the mode it was last set to.
+    if (NT_SUCCESS(status)) {
+        VoidModesSetPreferred(index, mode.Width, mode.Height, mode.RefreshHz);
+    }
     return status;
 }
 
@@ -683,6 +722,9 @@ NTSTATUS VoidDisplayDevice::SetModeDynamic(UINT32 index, const VOIDDISPLAY_MODE&
     }
     WdfWaitLockRelease(m_Lock);
 
+    if (NT_SUCCESS(status)) {
+        VoidModesSetPreferred(index, mode.Width, mode.Height, mode.RefreshHz);
+    }
     if (NT_SUCCESS(status) && replug) {
         ReplugMonitor(index);
     }

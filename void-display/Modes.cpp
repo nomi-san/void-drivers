@@ -103,6 +103,14 @@ static SRWLOCK       s_modeLock = SRWLOCK_INIT;
 static VOID_MODE_DESC s_customModes[VOID_MAX_CUSTOM_MODES];
 static unsigned      s_customCount = 0;
 
+// Per-slot preferred mode. Its own lock rather than s_modeLock: the mode
+// callbacks read the advertised list and the preferred mode back to back, and
+// two independent locks keep those from being one contended section.
+// A zeroed entry means "nothing published" - RefreshHz == 0 is the sentinel,
+// since VoidModesSetPreferred rejects a zero component.
+static SRWLOCK        s_preferredLock = SRWLOCK_INIT;
+static VOID_MODE_DESC s_preferred[VOIDDISPLAY_MAX_DISPLAYS];
+
 static bool SameMode(const VOID_MODE_DESC& a, UINT32 w, UINT32 h, UINT32 hz)
 {
     return a.Width == w && a.Height == h && a.RefreshHz == hz;
@@ -198,6 +206,45 @@ bool VoidModesContains(UINT32 width, UINT32 height, UINT32 hz)
     }
     ReleaseSRWLockShared(&s_modeLock);
     return found;
+}
+
+void VoidModesSetPreferred(UINT32 slot, UINT32 width, UINT32 height, UINT32 hz)
+{
+    if (slot >= VOIDDISPLAY_MAX_DISPLAYS || width == 0 || height == 0 || hz == 0) {
+        return;
+    }
+    AcquireSRWLockExclusive(&s_preferredLock);
+    s_preferred[slot].Width     = width;
+    s_preferred[slot].Height    = height;
+    s_preferred[slot].RefreshHz = hz;
+    ReleaseSRWLockExclusive(&s_preferredLock);
+}
+
+void VoidModesClearPreferred(UINT32 slot)
+{
+    if (slot >= VOIDDISPLAY_MAX_DISPLAYS) {
+        return;
+    }
+    AcquireSRWLockExclusive(&s_preferredLock);
+    s_preferred[slot].Width     = 0;
+    s_preferred[slot].Height    = 0;
+    s_preferred[slot].RefreshHz = 0;
+    ReleaseSRWLockExclusive(&s_preferredLock);
+}
+
+bool VoidModesGetPreferred(UINT32 slot, VOID_MODE_DESC* out)
+{
+    if (slot >= VOIDDISPLAY_MAX_DISPLAYS || out == nullptr) {
+        return false;
+    }
+    AcquireSRWLockShared(&s_preferredLock);
+    VOID_MODE_DESC m = s_preferred[slot];
+    ReleaseSRWLockShared(&s_preferredLock);
+    if (m.RefreshHz == 0) {
+        return false;  // nothing published for this slot
+    }
+    *out = m;
+    return true;
 }
 
 // Load custom modes the SDK persisted to display.ini so they survive a device
